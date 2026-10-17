@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Character Rig Editor — Canvas Sprite Skeletal Animation</title>
+  <meta name="description" content="Rig any 2D game character sprite in the browser: load a turnaround GIF or PNG frames, auto-rig, drag joints, preview a realistic walk cycle and export a character profile for your JavaScript game." />
+  <style>
+    :root {
+      --bg: #0b0f19;
+      --panel: rgba(17, 24, 39, 0.92);
+      --border: rgba(148, 163, 184, 0.18);
+      --accent: #ef4444;
+      --cyan: #38bdf8;
+      --text: #f8fafc;
+      --muted: #94a3b8;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: radial-gradient(circle at 50% 25%, #1e293b 0%, #090d16 100%);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 20px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+    }
+    header h1 { font-size: 16px; }
+    header a { color: var(--cyan); font-size: 13px; text-decoration: none; }
+    .workspace { flex: 1; display: flex; min-height: 0; }
+    aside {
+      width: 340px;
+      overflow-y: auto;
+      padding: 12px;
+      background: var(--panel);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .card {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 12px;
+      background: rgba(15, 23, 42, 0.6);
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+    }
+    .card h2 { font-size: 12px; letter-spacing: 0.8px; text-transform: uppercase; color: var(--cyan); }
+    .hint { font-size: 12px; color: var(--muted); line-height: 1.4; }
+    label.row { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12px; }
+    label.row span:last-child { color: var(--muted); font-variant-numeric: tabular-nums; }
+    input[type="range"] { width: 100%; }
+    select { max-width: 62%; }
+    select, input[type="text"], input[type="number"] {
+      background: #0f172a; color: var(--text); border: 1px solid var(--border);
+      border-radius: 6px; padding: 4px 6px; font-size: 12px;
+    }
+    .btn {
+      background: rgba(30, 41, 59, 0.9); color: var(--text); border: 1px solid var(--border);
+      border-radius: 7px; padding: 7px 10px; font-size: 12px; font-weight: 600; cursor: pointer;
+      text-align: center;
+    }
+    .btn:hover { border-color: rgba(255, 255, 255, 0.35); }
+    .btn.primary { background: linear-gradient(135deg, #2563eb, #1d4ed8); }
+    .btn.accent { background: linear-gradient(135deg, #ef4444, #991b1b); }
+    .btn input[type="file"] { display: none; }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .check { display: flex; gap: 6px; align-items: center; font-size: 12px; }
+    .swatches { display: flex; gap: 4px; flex-wrap: wrap; }
+    .swatches span { width: 18px; height: 18px; border-radius: 4px; border: 1px solid #fff4; }
+    main {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 1fr 1fr 1.3fr;
+      gap: 10px;
+      padding: 10px;
+      min-width: 0;
+    }
+    .view {
+      display: flex;
+      flex-direction: column;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: rgba(2, 6, 23, 0.55);
+      min-height: 0;
+      overflow: hidden;
+    }
+    .view-head {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 6px 10px; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--border);
+      gap: 8px; flex-wrap: wrap;
+    }
+    .view-head strong { color: var(--text); }
+    .view canvas { flex: 1; width: 100%; min-height: 0; display: block; }
+    #status {
+      padding: 6px 14px; font-size: 12px; color: var(--muted);
+      border-top: 1px solid var(--border); background: var(--panel);
+    }
+    #status strong { color: var(--text); }
+    pre {
+      font-size: 11px; background: #020617; padding: 8px; border-radius: 6px;
+      overflow-x: auto; color: #cbd5e1;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🛠 Character Rig Editor</h1>
+    <a href="index.html">← Back to the demo</a>
+  </header>
+
+  <div class="workspace">
+    <aside>
+      <div class="card">
+        <h2>1. Load your character</h2>
+        <p class="hint">A biped (2 arms, 2 legs) standing in a neutral pose. Best: a turnaround from front (0°)
+          through right side (90°) to back (180°). One front or side image also works.</p>
+        <button class="btn" id="btnKnight">Use the example knight</button>
+        <label class="btn primary">🎞 Turnaround GIF<input type="file" id="fileGif" accept="image/gif" /></label>
+        <div class="grid2">
+          <label class="row">GIF covers
+            <select id="selCoverage"><option value="360">360°</option><option value="180">0→180°</option></select>
+          </label>
+          <label class="row">Frames <input type="number" id="numFrames" value="36" min="2" max="72" style="width:56px" /></label>
+        </div>
+        <label class="row">Frame # facing away (optional)
+          <input type="number" id="numBackFrame" placeholder="auto" min="1" style="width:70px" /></label>
+        <label class="btn primary">🖼 PNG frames, front → back<input type="file" id="fileFrames" accept="image/*" multiple /></label>
+        <div class="grid2">
+          <label class="btn">One image<input type="file" id="fileSingle" accept="image/*" /></label>
+          <select id="selSingleAngle"><option value="0">…is the front view</option><option value="90">…is the side view (facing right)</option></select>
+        </div>
+        <label class="btn">📦 Sprite sheet + atlas (+ character.json)<input type="file" id="fileSheet" accept=".png,.webp,.json" multiple /></label>
+        <label class="check"><input type="checkbox" id="chkMirror" /> Character turns to face <em>left</em> first (mirror frames)</label>
+        <label class="row">Background
+          <select id="selKeying">
+            <option value="auto">auto (transparent PNG, or remove plain / gradient background)</option>
+            <option value="border">one solid color</option>
+            <option value="studio">studio grey (dithered GIF)</option>
+            <option value="none">none</option>
+          </select>
+        </label>
+        <label class="row"><span>Background tolerance</span><span id="lblTol">55</span></label>
+        <input type="range" id="rngTol" min="5" max="120" value="55" />
+        <label class="row"><span>Frame height (px)</span><span id="lblHeight">335</span></label>
+        <input type="range" id="rngHeight" min="96" max="512" step="1" value="335" />
+        <button class="btn" id="btnReprocess">Re-process with these settings</button>
+      </div>
+
+      <div class="card">
+        <h2>2. Auto-rig</h2>
+        <p class="hint">Places every joint from the silhouette. Then fine-tune by dragging.</p>
+        <label class="row">Body type
+          <select id="selPreset">
+            <option value="chibi">chibi / big head</option>
+            <option value="human">realistic human</option>
+          </select>
+        </label>
+        <button class="btn accent" id="btnAutoRig">⚡ Auto-rig from silhouette</button>
+      </div>
+
+      <div class="card">
+        <h2>3. Joints</h2>
+        <p class="hint">Drag the dots. <strong>Front view</strong> sets left/right and height,
+          <strong>side view</strong> sets depth (forward/back) and height. The yellow line is the floor
+          (lowest heel / toe).</p>
+        <label class="check"><input type="checkbox" id="chkSymmetric" checked /> Mirror left / right edits</label>
+        <label class="check"><input type="checkbox" id="chkLabels" checked /> Show body-part colors</label>
+        <div class="hint" id="lblJoint">Selected: —</div>
+      </div>
+
+      <div class="card">
+        <h2>4. Cloth (cape / tabard / skirt)</h2>
+        <label class="row">Cloth pixels
+          <select id="selCloth">
+            <option value="none">none</option>
+            <option value="colors">picked colors</option>
+            <option value="dominantRed">red-dominant pixels</option>
+          </select>
+        </label>
+        <button class="btn" id="btnPickCloth">🎯 Pick cloth color (click the front or side view)</button>
+        <div class="swatches" id="clothSwatches"></div>
+        <label class="row"><span>Color tolerance</span><span id="lblClothTol">40</span></label>
+        <input type="range" id="rngClothTol" min="5" max="120" value="40" />
+        <button class="btn" id="btnClearCloth">Clear colors</button>
+      </div>
+
+      <div class="card">
+        <h2>5. Body-part sizes</h2>
+        <div id="segSliders"></div>
+      </div>
+
+      <div class="card">
+        <h2>6. Walk style</h2>
+        <div id="gaitSliders"></div>
+      </div>
+
+      <div class="card">
+        <h2>7. Export</h2>
+        <label class="row">Name <input type="text" id="txtName" value="my-hero" /></label>
+        <button class="btn accent" id="btnExportAll">⬇ Download character (3 files)</button>
+        <div class="grid2">
+          <button class="btn" id="btnExportJson">character.json</button>
+          <button class="btn" id="btnExportSheet">sheet + atlas</button>
+        </div>
+        <p class="hint">Put the 3 files in one folder (e.g. <code>characters/my-hero/</code>), then:</p>
+        <pre id="codeUsage"></pre>
+      </div>
+    </aside>
+
+    <main>
+      <div class="view">
+        <div class="view-head"><strong>Front view</strong><span id="lblFrontAngle"></span></div>
+        <canvas id="cvFront"></canvas>
+      </div>
+      <div class="view">
+        <div class="view-head"><strong>Side view</strong><span id="lblSideAngle"></span></div>
+        <canvas id="cvSide"></canvas>
+      </div>
+      <div class="view">
+        <div class="view-head">
+          <strong>Preview</strong>
+          <label class="check"><input type="checkbox" id="chkWalk" checked /> walk</label>
+          <label class="check"><input type="checkbox" id="chkSkel" /> skeleton</label>
+          <label class="check"><input type="checkbox" id="chkPlay" /> play test (WASD / arrows, Space, E)</label>
+        </div>
+        <div style="padding:6px 10px">
+          <label class="row"><span>Facing</span><span id="lblFacing">90°</span></label>
+          <input type="range" id="rngFacing" min="0" max="359" value="90" />
+        </div>
+        <canvas id="cvPreview" tabindex="0"></canvas>
+      </div>
+    </main>
+  </div>
+  <div id="status">Load a character to start, or try the example knight.</div>
+
+  <script type="module" src="editor.js"></script>
+</body>
+</html>

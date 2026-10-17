@@ -1,0 +1,745 @@
+/**
+ * editor.js — Character Rig Editor
+ * Load any biped character art, auto-rig it from its silhouette, drag joints on the front and
+ * side views, preview the walk cycle at any angle, and export a character profile + sprite sheet.
+ */
+import {
+  SkeletalRig, KNIGHT_PROFILE, MIRROR_JOINTS, SEGMENT_LABELS as LBL,
+  normalizeProfile, serializeProfile
+} from './skeletal_rig.js';
+import { GameCharacter, CanvasPixelProcessor } from './pixel_knight.js';
+import {
+  loadImage, decodeGifFrames, loadImageFrames, prepareFrames, framesFromSheet, buildSpriteSheet
+} from './sprite_tools.js';
+
+const $ = (id) => document.getElementById(id);
+
+const state = {
+  profile: null,     // normalized, editable character profile
+  frames: [],        // rig-ready frames
+  raws: null,        // unprocessed source frames (GIF / images), for re-processing
+  rig: null,
+  hero: new GameCharacter({ scale: 1 }),
+  selected: null,
+  drag: null,
+  pickCloth: false,
+  input: { up: false, down: false, left: false, right: false }
+};
+
+function setStatus(html) {
+  $('status').innerHTML = html;
+}
+
+// ---------------------------------------------------------------------------
+// Auto-rig presets: joints normalized to the front silhouette box
+// (x: fraction of box width from its center, y: fraction of height from its top, z: fraction of height)
+// ---------------------------------------------------------------------------
+const KNIGHT_FRONT_BOX = { x0: 22, x1: 210, y0: 11, y1: 325 };
+
+function presetFromProfile(profile, box) {
+  const W = box.x1 - box.x0, H = box.y1 - box.y0, cx = (box.x0 + box.x1) / 2;
+  const out = {};
+  for (const [n, j] of Object.entries(profile.joints)) {
+    out[n] = [(j.x - cx) / W, (j.y - box.y0) / H, (j.z ?? 0) / H];
+  }
+  return out;
+}
+
+const PRESETS = {
+  chibi: { aspect: 0.6, joints: presetFromProfile(KNIGHT_PROFILE, KNIGHT_FRONT_BOX), gait: {} },
+  human: {
+    aspect: 0.3,
+    joints: {
+      pelvis: [0, 0.53, 0], spine: [0, 0.41, 0], neck: [0, 0.15, 0], headTop: [0, 0, 0],
+      shoulderL: [-0.34, 0.19, -0.01], elbowL: [-0.4, 0.36, -0.01], wristL: [-0.43, 0.51, 0],
+      shoulderR: [0.34, 0.19, -0.01], elbowR: [0.4, 0.36, -0.01], wristR: [0.43, 0.51, 0],
+      tabardRoot: [0, 0.5, 0.04], tabardTip: [0, 0.72, 0.05],
+      capeRoot: [0, 0.2, -0.05], capeTip: [0, 0.72, -0.06],
+      hipL: [-0.15, 0.54, 0], kneeL: [-0.16, 0.76, 0.01], ankleL: [-0.17, 0.955, -0.005],
+      toeL: [-0.17, 0.995, 0.08], heelL: [-0.17, 1, -0.03],
+      hipR: [0.15, 0.54, 0], kneeR: [0.16, 0.76, 0.01], ankleR: [0.17, 0.955, -0.005],
+      toeR: [0.17, 0.995, 0.08], heelR: [0.17, 1, -0.03]
+    },
+    segmentation: { upperArmRadius: 0.045, forearmRadius: 0.04, handRadius: 0.05, handLength: 0.05, legRadius: 0.075, legTopSide: 0.01, legTopFront: 0.01 },
+    gait: { hipAmplitude: 0.42, kneeFlex: 1.0, armSwing: 0.34, lean: 0.04 }
+  }
+};
+
+function alphaBox(frame, threshold = 40) {
+  const { width: w, height: h } = frame;
+  const d = frame.imageData.data;
+  let x0 = w, y0 = h, x1 = -1, y1 = -1;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (d[(y * w + x) * 4 + 3] > threshold) {
+        if (x < x0) x0 = x;
+        if (x > x1) x1 = x;
+        if (y < y0) y0 = y;
+        if (y > y1) y1 = y;
+      }
+    }
+  }
+  return x1 < 0 ? null : { x0, y0, x1, y1 };
+}
+
+function opaque(frame, x, y) {
+  return frame.imageData.data[(y * frame.width + x) * 4 + 3] > 40;
+}
+
+function nearestFrame(angle, maxDiff = 30) {
+  let best = null, bestD = Infinity;
+  for (const f of state.frames) {
+    const d = Math.abs(f.angleDeg - angle);
+    if (d < bestD) { bestD = d; best = f; }
+  }
+  return bestD <= maxDiff ? best : null;
+}
+
+function autoRig(presetName) {
+  const preset = PRESETS[presetName];
+  const front = nearestFrame(0);
+  const side = nearestFrame(90);
+  const base = front || side;
+  if (!base) throw new Error('No front (0°) or side (90°) frame to rig');
+  const box = alphaBox(base);
+  if (!box) throw new Error('The frame is empty (background not removed?)');
+
+  const H = box.y1 - box.y0;
+  const W = front ? box.x1 - box.x0 : H * preset.aspect;
+  const cx = front ? (box.x0 + box.x1) / 2 : base.width / 2;
+  const joints = {};
+  for (const [n, [nx, ny, nz]] of Object.entries(preset.joints)) {
+    joints[n] = { x: cx + nx * W, y: box.y0 + ny * H, z: nz * H };
+  }
+
+  if (front) {
+    // Hands: the outermost silhouette point between the shoulders and a bit below the hips
+    const yA = Math.round(joints.elbowL.y), yB = Math.min(box.y1, Math.round(joints.hipL.y + 0.15 * H));
+    let bestL = null, bestR = null;
+    for (let y = yA; y <= yB; y++) {
+      let l = -1, r = -1;
+      for (let x = box.x0; x <= box.x1; x++) if (opaque(front, x, y)) { l = x; break; }
+      for (let x = box.x1; x >= box.x0; x--) if (opaque(front, x, y)) { r = x; break; }
+      if (l >= 0 && (!bestL || l < bestL.x)) bestL = { x: l, y };
+      if (r >= 0 && (!bestR || r > bestR.x)) bestR = { x: r, y };
+    }
+    const inset = 0.07 * W;
+    if (bestL) joints.wristL = { ...joints.wristL, x: bestL.x + inset, y: bestL.y };
+    if (bestR) joints.wristR = { ...joints.wristR, x: bestR.x - inset, y: bestR.y };
+    for (const s of ['L', 'R']) {
+      const sh = joints['shoulder' + s], wr = joints['wrist' + s];
+      joints['elbow' + s] = { ...joints['elbow' + s], x: (sh.x + wr.x) / 2, y: (sh.y + wr.y) / 2 };
+    }
+
+    // Feet: the two blobs in the bottom rows
+    const band = Math.max(2, Math.round(0.05 * H));
+    const sums = { L: [0, 0], R: [0, 0] };
+    for (let y = box.y1 - band; y <= box.y1; y++) {
+      for (let x = box.x0; x <= box.x1; x++) {
+        if (!opaque(front, x, y)) continue;
+        const s = x < cx ? 'L' : 'R';
+        sums[s][0] += x; sums[s][1]++;
+      }
+    }
+    const ankleDrop = (preset.joints.heelL[1] - preset.joints.ankleL[1]) * H;
+    for (const s of ['L', 'R']) {
+      if (!sums[s][1]) continue;
+      const fx = sums[s][0] / sums[s][1];
+      const hip = joints['hip' + s];
+      joints['ankle' + s] = { ...joints['ankle' + s], x: fx, y: box.y1 - ankleDrop };
+      joints['knee' + s] = { ...joints['knee' + s], x: hip.x + (fx - hip.x) * 0.75 };
+      joints['heel' + s] = { ...joints['heel' + s], x: fx, y: box.y1 };
+      joints['toe' + s] = { ...joints['toe' + s], x: fx, y: box.y1 - 0.003 * H };
+    }
+  }
+
+  if (side) {
+    // Toe / heel depth from the foot outline in profile (the character faces right)
+    const sbox = alphaBox(side);
+    if (sbox) {
+      const band = Math.max(2, Math.round(0.03 * H));
+      let minX = Infinity, maxX = -Infinity;
+      for (let y = sbox.y1 - band; y <= sbox.y1; y++) {
+        for (let x = sbox.x0; x <= sbox.x1; x++) {
+          if (opaque(side, x, y)) { minX = Math.min(minX, x); maxX = Math.max(maxX, x); }
+        }
+      }
+      const toeZ = maxX - joints.pelvis.x - 0.02 * H;
+      const heelZ = minX - joints.pelvis.x + 0.02 * H;
+      if (toeZ > 0 && heelZ < 0) {
+        for (const s of ['L', 'R']) {
+          joints['toe' + s].z = toeZ;
+          joints['heel' + s].z = heelZ;
+        }
+      }
+    }
+  }
+
+  const profile = {
+    version: 1,
+    name: $('txtName').value || 'my-hero',
+    frameWidth: base.width,
+    frameHeight: base.height,
+    joints,
+    yawTable: null,
+    armTable: null,
+    cloth: { mode: 'none', colors: [], tolerance: 40 },
+    gait: { ...preset.gait }
+  };
+  if (preset.segmentation) {
+    profile.segmentation = {};
+    for (const [k, v] of Object.entries(preset.segmentation)) profile.segmentation[k] = v * H;
+  }
+  return profile;
+}
+
+// ---------------------------------------------------------------------------
+// Profile / rig
+// ---------------------------------------------------------------------------
+let rebuildQueued = false;
+function scheduleRebuild() {
+  if (rebuildQueued) return;
+  rebuildQueued = true;
+  requestAnimationFrame(() => {
+    rebuildQueued = false;
+    rebuild();
+  });
+}
+
+function rebuild() {
+  if (!state.profile) return;
+  state.rig = new SkeletalRig(state.profile);
+  state.hero.rig = state.rig;
+  updateUsage();
+}
+
+function useProfile(profile) {
+  state.profile = normalizeProfile(profile);
+  $('txtName').value = state.profile.name;
+  syncControls();
+  rebuild();
+}
+
+function useFrames(frames) {
+  state.frames = frames;
+  state.hero.setFrames(frames);
+  const f = nearestFrame(0), s = nearestFrame(90);
+  $('lblFrontAngle').textContent = f ? `frame at ${Math.round(f.angleDeg)}°` : 'no front frame';
+  $('lblSideAngle').textContent = s ? `frame at ${Math.round(s.angleDeg)}°` : 'no side frame';
+}
+
+function processRaws() {
+  const mode = $('selKeying').value;
+  const keying = mode === 'studio' ? (img) => CanvasPixelProcessor.keyOutStudioBackground(img) : mode;
+  const frames = prepareFrames(state.raws, {
+    keying,
+    tolerance: +$('rngTol').value,
+    targetHeight: +$('rngHeight').value,
+    mirror: $('chkMirror').checked
+  });
+  useFrames(frames);
+}
+
+function runAutoRig() {
+  useProfile(autoRig($('selPreset').value));
+  setStatus(`<strong>Auto-rigged ${state.frames.length} frame(s).</strong> Drag joints to fine-tune; check the preview at several angles.`);
+}
+
+// ---------------------------------------------------------------------------
+// Sliders
+// ---------------------------------------------------------------------------
+const SEG_SLIDERS = [
+  ['upperArmRadius', 'Upper arm thickness'], ['forearmRadius', 'Forearm thickness'],
+  ['handRadius', 'Hand size'], ['handLength', 'Hand length'], ['legRadius', 'Leg thickness'],
+  ['legTopFront', 'Legs start below hip (front)'], ['legTopSide', 'Legs start below hip (side)']
+];
+const GAIT_SLIDERS = [
+  ['hipAmplitude', 'Stride (hip swing)', 0, 0.9], ['kneeFlex', 'Knee lift', 0, 1.6],
+  ['footRoll', 'Heel–toe roll', 0, 2], ['armSwing', 'Arm swing', 0, 1],
+  ['elbowFlex', 'Elbow bend', 0, 1], ['lean', 'Forward lean', -0.1, 0.3],
+  ['pelvisYaw', 'Hip twist', 0, 0.3], ['tabardPush', 'Front cloth push', 0, 1.5],
+  ['capeTrail', 'Cape trail', 0, 0.5], ['cameraTilt', 'Camera tilt', 0, 0.5]
+];
+
+function buildSliders() {
+  const make = (container, group, key, label, min, max, step) => {
+    const wrap = document.createElement('div');
+    wrap.innerHTML = `<label class="row"><span>${label}</span><span></span></label><input type="range" min="${min}" max="${max}" step="${step}" />`;
+    const input = wrap.querySelector('input');
+    const value = wrap.querySelectorAll('span')[1];
+    input.dataset.group = group;
+    input.dataset.key = key;
+    input.addEventListener('input', () => {
+      if (!state.profile) return;
+      state.profile[group][key] = +input.value;
+      value.textContent = (+input.value).toFixed(2);
+      scheduleRebuild();
+    });
+    container.appendChild(wrap);
+  };
+  for (const [k, label] of SEG_SLIDERS) make($('segSliders'), 'segmentation', k, label, 0, 100, 0.5);
+  for (const [k, label, min, max] of GAIT_SLIDERS) make($('gaitSliders'), 'gait', k, label, min, max, 0.01);
+}
+
+function syncControls() {
+  const p = state.profile;
+  const height = Math.max(p.joints.heelL.y, p.joints.toeL.y) - p.joints.headTop.y;
+  document.querySelectorAll('input[data-group]').forEach((input) => {
+    if (input.dataset.group === 'segmentation') input.max = Math.ceil(height * 0.3);
+    input.value = p[input.dataset.group][input.dataset.key];
+    input.parentElement.querySelectorAll('span')[1].textContent = (+input.value).toFixed(2);
+  });
+  $('selCloth').value = p.cloth.mode;
+  $('rngClothTol').value = p.cloth.tolerance;
+  $('lblClothTol').textContent = p.cloth.tolerance;
+  renderSwatches();
+}
+
+function renderSwatches() {
+  const el = $('clothSwatches');
+  el.innerHTML = '';
+  for (const [r, g, b] of state.profile?.cloth.colors || []) {
+    const s = document.createElement('span');
+    s.style.background = `rgb(${r},${g},${b})`;
+    el.appendChild(s);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Front / side joint views
+// ---------------------------------------------------------------------------
+const LABEL_COLORS = {
+  [LBL.TORSO]: [150, 150, 150], [LBL.HEAD]: [80, 110, 240], [LBL.ARM_L]: [200, 60, 220],
+  [LBL.ARM_R]: [240, 80, 160], [LBL.LEG_L]: [40, 200, 60], [LBL.LEG_R]: [230, 210, 30],
+  [LBL.LEGS]: [60, 200, 200], [LBL.CLOTH_F]: [240, 60, 40], [LBL.CLOTH_B]: [140, 30, 20]
+};
+const BONES = [
+  ['pelvis', 'spine'], ['spine', 'neck'], ['neck', 'headTop'],
+  ['spine', 'shoulderL'], ['shoulderL', 'elbowL'], ['elbowL', 'wristL'],
+  ['spine', 'shoulderR'], ['shoulderR', 'elbowR'], ['elbowR', 'wristR'],
+  ['tabardRoot', 'tabardTip'], ['capeRoot', 'capeTip'],
+  ['pelvis', 'hipL'], ['hipL', 'kneeL'], ['kneeL', 'ankleL'], ['ankleL', 'toeL'], ['ankleL', 'heelL'],
+  ['pelvis', 'hipR'], ['hipR', 'kneeR'], ['kneeR', 'ankleR'], ['ankleR', 'toeR'], ['ankleR', 'heelR']
+];
+const views = {
+  front: { canvas: $('cvFront'), angle: 0 },
+  side: { canvas: $('cvSide'), angle: 90 }
+};
+
+function fitCanvas(canvas) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.max(1, Math.round(canvas.clientWidth * dpr));
+  const h = Math.max(1, Math.round(canvas.clientHeight * dpr));
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w;
+    canvas.height = h;
+  }
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { ctx, w: canvas.clientWidth, h: canvas.clientHeight };
+}
+
+function viewTransform(view, frame) {
+  const { clientWidth: w, clientHeight: h } = view.canvas;
+  const s = Math.min(w / frame.width, h / frame.height) * 0.94;
+  return { s, ox: (w - frame.width * s) / 2, oy: (h - frame.height * s) / 2 };
+}
+
+function labelCanvas(frame) {
+  const rig = state.rig;
+  rig._labelCanvases = rig._labelCanvases || new WeakMap();
+  let c = rig._labelCanvases.get(frame);
+  if (c) return c;
+  const seg = rig.getFrameSegmentation(frame, frame.angleDeg);
+  c = document.createElement('canvas');
+  c.width = frame.width;
+  c.height = frame.height;
+  const img = new ImageData(frame.width, frame.height);
+  for (let i = 0; i < seg.labels.length; i++) {
+    const col = LABEL_COLORS[seg.labels[i] & 0x7f];
+    if (!col) continue;
+    img.data[i * 4] = col[0];
+    img.data[i * 4 + 1] = col[1];
+    img.data[i * 4 + 2] = col[2];
+    img.data[i * 4 + 3] = 150;
+  }
+  c.getContext('2d').putImageData(img, 0, 0);
+  rig._labelCanvases.set(frame, c);
+  return c;
+}
+
+function drawView(view) {
+  const { ctx, w, h } = fitCanvas(view.canvas);
+  ctx.clearRect(0, 0, w, h);
+  const frame = nearestFrame(view.angle);
+  if (!frame || !state.rig) {
+    ctx.fillStyle = '#64748b';
+    ctx.font = '13px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(state.frames.length ? 'no frame near this angle' : 'load a character', w / 2, h / 2);
+    return;
+  }
+  const { s, ox, oy } = viewTransform(view, frame);
+  ctx.imageSmoothingEnabled = s < 1;
+  ctx.drawImage(frame.canvas, ox, oy, frame.width * s, frame.height * s);
+  if ($('chkLabels').checked) ctx.drawImage(labelCanvas(frame), ox, oy, frame.width * s, frame.height * s);
+
+  // floor line
+  ctx.strokeStyle = 'rgba(250, 204, 21, 0.5)';
+  ctx.beginPath();
+  ctx.moveTo(0, oy + state.rig.floorY * s);
+  ctx.lineTo(w, oy + state.rig.floorY * s);
+  ctx.stroke();
+
+  const j = state.rig.restJoints2D(frame.angleDeg);
+  const P = (n) => [ox + j[n].restX * s, oy + j[n].restY * s];
+  ctx.lineWidth = 2;
+  for (const [a, b] of BONES) {
+    ctx.strokeStyle = a.endsWith('R') || b.endsWith('R') ? '#eab308' : a.endsWith('L') || b.endsWith('L') ? '#22c55e' : '#38bdf8';
+    ctx.beginPath();
+    ctx.moveTo(...P(a));
+    ctx.lineTo(...P(b));
+    ctx.stroke();
+  }
+  for (const n of Object.keys(j)) {
+    const [x, y] = P(n);
+    ctx.fillStyle = n === state.selected ? '#f43f5e' : '#0f172a';
+    ctx.strokeStyle = '#f8fafc';
+    ctx.beginPath();
+    ctx.arc(x, y, n === state.selected ? 6 : 4.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  }
+}
+
+function pointerToFrame(view, e) {
+  const frame = nearestFrame(view.angle);
+  if (!frame) return null;
+  const rect = view.canvas.getBoundingClientRect();
+  const { s, ox, oy } = viewTransform(view, frame);
+  return { frame, s, fx: (e.clientX - rect.left - ox) / s, fy: (e.clientY - rect.top - oy) / s };
+}
+
+function setJointFromView(view, name, fx, fy) {
+  const p = state.profile;
+  const frame = nearestFrame(view.angle);
+  const yaw = (state.rig.visualYawDeg(frame.angleDeg) * Math.PI) / 180;
+  const cos = Math.cos(yaw), sin = Math.sin(yaw);
+  const J = p.joints[name];
+  const pelvis = p.joints.pelvis;
+
+  J.y = fy;
+  if (name !== 'pelvis') {
+    if (Math.abs(cos) >= Math.abs(sin)) {
+      J.x = pelvis.x + (fx - pelvis.x - J.z * sin) / cos;
+    } else {
+      J.z = (fx - pelvis.x - (J.x - pelvis.x) * cos) / sin;
+    }
+  } else if (Math.abs(cos) >= Math.abs(sin)) {
+    J.x = fx;
+  }
+
+  const twin = MIRROR_JOINTS[name] || Object.keys(MIRROR_JOINTS).find((k) => MIRROR_JOINTS[k] === name);
+  if ($('chkSymmetric').checked && twin) {
+    p.joints[twin] = { x: 2 * pelvis.x - J.x, y: J.y, z: J.z };
+  }
+  if (p.armTable && /shoulder|elbow|wrist/.test(name)) {
+    p.armTable = null;
+    setStatus('<strong>Note:</strong> the measured arm table was turned off so your arm joints are used.');
+  }
+  scheduleRebuild();
+}
+
+for (const view of Object.values(views)) {
+  view.canvas.addEventListener('pointerdown', (e) => {
+    const pt = pointerToFrame(view, e);
+    if (!pt || !state.rig) return;
+    if (state.pickCloth) {
+      const x = Math.round(pt.fx), y = Math.round(pt.fy);
+      if (x >= 0 && y >= 0 && x < pt.frame.width && y < pt.frame.height) {
+        const d = pt.frame.imageData.data, i = (y * pt.frame.width + x) * 4;
+        if (d[i + 3] > 40) {
+          state.profile.cloth.colors.push([d[i], d[i + 1], d[i + 2]]);
+          state.profile.cloth.mode = 'colors';
+          $('selCloth').value = 'colors';
+          renderSwatches();
+          scheduleRebuild();
+        }
+      }
+      state.pickCloth = false;
+      $('btnPickCloth').classList.remove('primary');
+      return;
+    }
+    const j = state.rig.restJoints2D(pt.frame.angleDeg);
+    let best = null, bestD = 12 / pt.s;
+    for (const [n, q] of Object.entries(j)) {
+      const d = Math.hypot(q.restX - pt.fx, q.restY - pt.fy);
+      if (d < bestD) { bestD = d; best = n; }
+    }
+    state.selected = best;
+    $('lblJoint').textContent = `Selected: ${best ?? '—'}`;
+    if (best) {
+      state.drag = { view, name: best };
+      view.canvas.setPointerCapture(e.pointerId);
+    }
+  });
+  view.canvas.addEventListener('pointermove', (e) => {
+    if (!state.drag || state.drag.view !== view) return;
+    const pt = pointerToFrame(view, e);
+    if (pt) setJointFromView(view, state.drag.name, pt.fx, pt.fy);
+  });
+  view.canvas.addEventListener('pointerup', () => { state.drag = null; });
+}
+
+// ---------------------------------------------------------------------------
+// Preview / play test
+// ---------------------------------------------------------------------------
+let last = performance.now();
+function frameLoop(now) {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  drawView(views.front);
+  drawView(views.side);
+  drawPreview(dt);
+  requestAnimationFrame(frameLoop);
+}
+
+function drawPreview(dt) {
+  const canvas = $('cvPreview');
+  const { ctx, w, h } = fitCanvas(canvas);
+  ctx.clearRect(0, 0, w, h);
+  const hero = state.hero;
+  if (!state.rig || !state.frames.length) return;
+
+  const fh = state.frames[0].height;
+  const fit = (h * 0.8) / fh;
+  const play = $('chkPlay').checked;
+  if (play) {
+    hero.scale = fit * 0.55;
+    hero.update(dt, { ...state.input }, { width: w, height: h });
+    $('lblFacing').textContent = `${Math.round(hero.facingDeg)}°`;
+  } else {
+    hero.scale = fit;
+    hero.x = w / 2;
+    hero.y = (h - fh * fit) / 2 + fh * fit * 0.75;
+    hero.vx = hero.vy = 0;
+    hero.facingDeg = +$('rngFacing').value;
+    hero.demoWalk = $('chkWalk').checked;
+    hero.update(dt, {}, { width: w * 4, height: h * 4 });
+    hero.x = w / 2;
+    hero.y = (h - fh * fit) / 2 + fh * fit * 0.75;
+  }
+
+  ctx.strokeStyle = 'rgba(148, 163, 184, 0.25)';
+  ctx.beginPath();
+  const floor = hero.y + hero.footOffset * hero.scale;
+  ctx.moveTo(0, floor);
+  ctx.lineTo(w, floor);
+  ctx.stroke();
+  hero.draw(ctx, { showSkeleton: $('chkSkel').checked });
+}
+
+const KEYS = { KeyW: 'up', ArrowUp: 'up', KeyS: 'down', ArrowDown: 'down', KeyA: 'left', ArrowLeft: 'left', KeyD: 'right', ArrowRight: 'right' };
+window.addEventListener('keydown', (e) => {
+  if (!$('chkPlay').checked || e.target.tagName === 'INPUT' && e.target.type !== 'checkbox' && e.target.type !== 'range') return;
+  if (KEYS[e.code]) { state.input[KEYS[e.code]] = true; e.preventDefault(); }
+  if (e.code === 'Space') { state.hero.jump(); e.preventDefault(); }
+  if (e.code === 'KeyE') state.hero.attack();
+});
+window.addEventListener('keyup', (e) => {
+  if (KEYS[e.code]) state.input[KEYS[e.code]] = false;
+});
+$('chkPlay').addEventListener('change', (e) => {
+  const c = $('cvPreview');
+  state.hero.x = c.clientWidth / 2;
+  state.hero.y = c.clientHeight * 0.6;
+  state.hero.demoWalk = false;
+  if (e.target.checked) c.focus();
+});
+
+// ---------------------------------------------------------------------------
+// Loading
+// ---------------------------------------------------------------------------
+async function guard(label, fn) {
+  setStatus(`<strong>${label}…</strong>`);
+  try {
+    await fn();
+  } catch (err) {
+    console.error(err);
+    setStatus(`<strong>Error:</strong> ${err.message}`);
+  }
+}
+
+$('btnKnight').addEventListener('click', () => guard('Loading the knight', async () => {
+  const base = './characters/knight/';
+  const [atlas, img] = await Promise.all([
+    fetch(base + KNIGHT_PROFILE.sprite.atlas).then((r) => r.json()),
+    loadImage(base + KNIGHT_PROFILE.sprite.sheet)
+  ]);
+  state.raws = null;
+  useFrames(framesFromSheet(img, atlas));
+  useProfile({ ...KNIGHT_PROFILE, name: 'knight' });
+  setStatus('<strong>Example knight loaded</strong> (hand-tuned profile). Try the preview, or press Auto-rig to see what it does from scratch.');
+}));
+
+$('fileGif').addEventListener('change', (e) => guard('Decoding GIF', async () => {
+  const file = e.target.files[0];
+  if (!file) return;
+  state.raws = await decodeGifFrames(file, {
+    frameCount: +$('numFrames').value,
+    coverage: +$('selCoverage').value,
+    backFrame: $('numBackFrame').value ? +$('numBackFrame').value : null
+  });
+  processRaws();
+  runAutoRig();
+  e.target.value = '';
+}));
+
+$('fileFrames').addEventListener('change', (e) => guard('Loading frames', async () => {
+  const files = [...e.target.files].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+  if (!files.length) return;
+  state.raws = await loadImageFrames(files);
+  processRaws();
+  runAutoRig();
+  e.target.value = '';
+}));
+
+$('fileSingle').addEventListener('change', (e) => guard('Loading image', async () => {
+  const file = e.target.files[0];
+  if (!file) return;
+  state.raws = await loadImageFrames([file], { singleAngle: +$('selSingleAngle').value });
+  processRaws();
+  runAutoRig();
+  e.target.value = '';
+}));
+
+$('fileSheet').addEventListener('change', (e) => guard('Loading sprite sheet', async () => {
+  let atlas = null, profile = null, sheet = null;
+  for (const f of e.target.files) {
+    if (f.type.startsWith('image/')) sheet = f;
+    else {
+      const json = JSON.parse(await f.text());
+      if (json.joints) profile = json;
+      else if (json.frames) atlas = json;
+    }
+  }
+  if (!sheet || !atlas) throw new Error('select the sheet image and its atlas .json (character.json optional)');
+  state.raws = null;
+  useFrames(framesFromSheet(await loadImage(URL.createObjectURL(sheet)), atlas));
+  if (profile) {
+    useProfile(profile);
+    setStatus(`<strong>Loaded ${profile.name}</strong> with its profile.`);
+  } else {
+    runAutoRig();
+  }
+  e.target.value = '';
+}));
+
+$('btnReprocess').addEventListener('click', () => guard('Re-processing', async () => {
+  if (!state.raws) throw new Error('re-processing works for GIF / image sources');
+  processRaws();
+  runAutoRig();
+}));
+$('btnAutoRig').addEventListener('click', () => guard('Auto-rigging', async () => runAutoRig()));
+
+$('rngTol').addEventListener('input', (e) => { $('lblTol').textContent = e.target.value; });
+$('rngHeight').addEventListener('input', (e) => { $('lblHeight').textContent = e.target.value; });
+$('rngFacing').addEventListener('input', (e) => { $('lblFacing').textContent = `${e.target.value}°`; });
+
+$('selCloth').addEventListener('change', (e) => {
+  if (!state.profile) return;
+  state.profile.cloth.mode = e.target.value;
+  scheduleRebuild();
+});
+$('rngClothTol').addEventListener('input', (e) => {
+  $('lblClothTol').textContent = e.target.value;
+  if (!state.profile) return;
+  state.profile.cloth.tolerance = +e.target.value;
+  scheduleRebuild();
+});
+$('btnPickCloth').addEventListener('click', () => {
+  state.pickCloth = true;
+  $('btnPickCloth').classList.add('primary');
+  setStatus('Click a cloth pixel in the front or side view.');
+});
+$('btnClearCloth').addEventListener('click', () => {
+  if (!state.profile) return;
+  state.profile.cloth.colors = [];
+  renderSwatches();
+  scheduleRebuild();
+});
+
+// ---------------------------------------------------------------------------
+// Export
+// ---------------------------------------------------------------------------
+function slug() {
+  return ($('txtName').value || 'my-hero').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'my-hero';
+}
+
+function download(name, blob) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+
+function exportProfileText() {
+  const name = slug();
+  const p = {
+    ...state.profile,
+    name,
+    frameWidth: state.frames[0].width,
+    frameHeight: state.frames[0].height,
+    sprite: { sheet: `${name}_spritesheet.png`, atlas: `${name}_atlas.json` }
+  };
+  return serializeProfile(p);
+}
+
+async function exportSheet() {
+  const name = slug();
+  const { canvas, atlas } = buildSpriteSheet(state.frames, { source: name });
+  const blob = await new Promise((r) => canvas.toBlob(r, 'image/png'));
+  download(`${name}_spritesheet.png`, blob);
+  await new Promise((r) => setTimeout(r, 300));
+  download(`${name}_atlas.json`, new Blob([JSON.stringify(atlas, null, 2)], { type: 'application/json' }));
+}
+
+function ready() {
+  if (!state.profile || !state.frames.length) throw new Error('load and rig a character first');
+}
+$('btnExportJson').addEventListener('click', () => guard('Exporting', async () => {
+  ready();
+  download('character.json', new Blob([exportProfileText()], { type: 'application/json' }));
+  setStatus('<strong>Saved character.json</strong>');
+}));
+$('btnExportSheet').addEventListener('click', () => guard('Exporting', async () => {
+  ready();
+  await exportSheet();
+  setStatus('<strong>Saved sprite sheet + atlas</strong>');
+}));
+$('btnExportAll').addEventListener('click', () => guard('Exporting', async () => {
+  ready();
+  download('character.json', new Blob([exportProfileText()], { type: 'application/json' }));
+  await new Promise((r) => setTimeout(r, 300));
+  await exportSheet();
+  setStatus(`<strong>Saved 3 files.</strong> Put them in <code>characters/${slug()}/</code>.`);
+}));
+
+function updateUsage() {
+  $('codeUsage').textContent =
+`import { GameCharacter } from './pixel_knight.js';
+
+const hero = await GameCharacter.load(
+  './characters/${slug()}/character.json'
+);
+// each frame:
+hero.update(dt, { left, right, up, down });
+hero.draw(ctx);`;
+}
+$('txtName').addEventListener('input', updateUsage);
+
+buildSliders();
+updateUsage();
+requestAnimationFrame(frameLoop);
+$('btnKnight').click();

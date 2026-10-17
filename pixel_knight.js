@@ -17,7 +17,8 @@
  * 6. Dynamic Pixel Particle & 3D Voxel Point-Cloud Extractor
  */
 
-import { KnightSkeletalRig } from './skeletal_rig.js';
+import { SkeletalRig, KnightSkeletalRig } from './skeletal_rig.js';
+import { loadImage, framesFromSheet } from './sprite_tools.js';
 
 export class CanvasPixelProcessor {
   static sharedRig = new KnightSkeletalRig();
@@ -380,9 +381,18 @@ export class CanvasPixelProcessor {
 }
 
 /**
- * PixelKnight — Playable 360° Moving Game Object powered by Canvas Pixel Buffers
+ * GameCharacter — playable 360° game object for ANY rigged character.
+ *
+ *   const hero = await GameCharacter.load('./characters/knight/character.json');
+ *
+ * The character profile (made with editor.html) describes the skeleton; its `sprite` field
+ * points to the sprite sheet + atlas, relative to the profile file.
  */
-export class PixelKnight {
+export class GameCharacter {
+  /**
+   * @param options.profile  character profile object (or pass options.rig)
+   * @param options.rig      an existing SkeletalRig
+   */
   constructor(options = {}) {
     this.x = options.x ?? 450;
     this.y = options.y ?? 340;
@@ -392,6 +402,7 @@ export class PixelKnight {
     this.vy = 0;
     this.speed = options.speed ?? 280;
     this.scale = options.scale ?? 0.62;
+    this.rig = options.rig ?? (options.profile ? new SkeletalRig(options.profile) : CanvasPixelProcessor.sharedRig);
 
     // Facing angle in degrees:
     // 0 = Front (South), 90 = Right (East), 180 = Back (North), 270 = Left (West)
@@ -412,45 +423,60 @@ export class PixelKnight {
     this.afterImages = [];
     this.dustParticles = [];
 
-    // Loaded frame buffers (36 frames covering 0°..180°)
+    // Loaded frame buffers (e.g. 36 frames covering 0°..180°)
     this.frames = [];
     this.activeDeformedData = null;
     this.ready = false;
   }
 
   /**
-   * Loads the pre-extracted 36-angle transparent sprite sheet & slices each frame
-   * into its own Canvas + ImageData pixel buffer for instant pixel access.
+   * Creates a character from a profile JSON URL (or object + baseUrl) and loads its sprite sheet.
    */
-  async loadFromSpriteSheet(sheetUrl = './knight_spritesheet.png', atlasUrl = './knight_atlas.json') {
-    const [atlasRes, img] = await Promise.all([
+  static async load(profileOrUrl, options = {}) {
+    let profile = profileOrUrl;
+    let baseUrl = options.baseUrl ?? document.baseURI;
+    if (typeof profileOrUrl === 'string') {
+      const url = new URL(profileOrUrl, document.baseURI);
+      profile = await fetch(url).then(r => r.json());
+      baseUrl = url.href;
+    }
+    const character = new this({ ...options, profile });
+    if (profile.sprite) {
+      await character.loadFromSpriteSheet(
+        new URL(profile.sprite.sheet, baseUrl).href,
+        new URL(profile.sprite.atlas, baseUrl).href
+      );
+    }
+    return character;
+  }
+
+  /** Swaps in another character profile (keeps position and state). */
+  setProfile(profile) {
+    this.rig = new SkeletalRig(profile);
+  }
+
+  /** Uses already-prepared frames (e.g. from sprite_tools.prepareFrames). */
+  setFrames(frames) {
+    this.frames = frames;
+    this.ready = frames.length > 0;
+  }
+
+  /** Distance from the draw anchor (75% down the frame) to the floor, in frame pixels. */
+  get footOffset() {
+    const h = this.frames[0]?.height ?? this.rig.profile.frameHeight;
+    return this.rig.floorY - h * 0.75;
+  }
+
+  /**
+   * Loads a sprite sheet + atlas & slices each frame into its own Canvas + ImageData
+   * pixel buffer for instant pixel access.
+   */
+  async loadFromSpriteSheet(sheetUrl = './characters/knight/knight_spritesheet.png', atlasUrl = './characters/knight/knight_atlas.json') {
+    const [atlas, img] = await Promise.all([
       fetch(atlasUrl).then(r => r.json()),
-      new Promise((resolve, reject) => {
-        const image = new Image();
-        image.crossOrigin = 'anonymous';
-        image.onload = () => resolve(image);
-        image.onerror = reject;
-        image.src = sheetUrl;
-      })
+      loadImage(sheetUrl)
     ]);
-
-    this.frames = atlasRes.frames.map(meta => {
-      const c = document.createElement('canvas');
-      c.width = meta.w;
-      c.height = meta.h;
-      const ctx = c.getContext('2d', { willReadFrequently: true });
-      ctx.drawImage(img, meta.x, meta.y, meta.w, meta.h, 0, 0, meta.w, meta.h);
-      const imageData = ctx.getImageData(0, 0, meta.w, meta.h);
-      return {
-        ...meta,
-        canvas: c,
-        imageData,
-        width: meta.w,
-        height: meta.h
-      };
-    });
-
-    this.ready = true;
+    this.setFrames(framesFromSheet(img, atlas));
     return this.frames;
   }
 
@@ -469,10 +495,14 @@ export class PixelKnight {
       flipX = true;
     }
 
-    const idx = Math.min(
-      this.frames.length - 1,
-      Math.max(0, Math.round((lookupDeg / 180) * (this.frames.length - 1)))
-    );
+    // Nearest frame by its angle (frames don't have to be evenly spaced)
+    let idx = 0;
+    let best = Infinity;
+    for (let i = 0; i < this.frames.length; i++) {
+      const a = this.frames[i].angleDeg ?? (i / Math.max(1, this.frames.length - 1)) * 180;
+      const d = Math.abs(a - lookupDeg);
+      if (d < best) { best = d; idx = i; }
+    }
 
     return {
       frame: this.frames[idx],
@@ -488,7 +518,7 @@ export class PixelKnight {
   getCurrentWalkImageData() {
     const st = this.getActiveFrameState();
     if (!st) return null;
-    return CanvasPixelProcessor.synthesizeWalkFrame(
+    return this.rig.renderRiggedFrame(
       st.frame,
       this.walkPhase,
       this.walkIntensity,
@@ -620,7 +650,7 @@ export class PixelKnight {
       this.walkIntensity = Math.min(1.0, this.walkIntensity + dt * 9.0);
       // Advance the gait so one cycle covers exactly two strides on screen: the planted foot
       // stays put on the ground instead of skating
-      const cycleLength = CanvasPixelProcessor.sharedRig.strideCycleLength(this.walkIntensity) * this.scale;
+      const cycleLength = this.rig.strideCycleLength(this.walkIntensity) * this.scale;
       this.walkPhase = (this.walkPhase + dt * effectiveSpeed * (Math.PI * 2) / cycleLength) % (Math.PI * 2);
 
       // Emit dust puff at heel strike (left heel strikes at phase π/2, right heel at 3π/2)
@@ -631,7 +661,7 @@ export class PixelKnight {
         for (let i = 0; i < 4; i++) {
           this.dustParticles.push({
             x: this.x + footOffsetX + (Math.random() - 0.5) * 14,
-            y: this.y + 44 + (Math.random() - 0.5) * 6,
+            y: this.y + this.footOffset * this.scale + (Math.random() - 0.5) * 6,
             vx: -this.vx * 0.18 + (Math.random() - 0.5) * 38,
             vy: -12 - Math.random() * 28,
             size: 3 + Math.random() * 4,
@@ -709,7 +739,7 @@ export class PixelKnight {
     // 1. Dynamic Ground Contact Shadows
     const shadowScale = Math.max(0.35, 1 - this.z / 260);
     ctx.save();
-    ctx.translate(this.x, this.y + 44);
+    ctx.translate(this.x, this.y + this.footOffset * this.scale);
     ctx.scale(shadowScale, shadowScale * 0.38);
     const grad = ctx.createRadialGradient(0, 0, 4, 0, 0, drawW * 0.42);
     grad.addColorStop(0, 'rgba(0, 0, 0, 0.60)');
@@ -742,7 +772,7 @@ export class PixelKnight {
     }
 
     // 4. Solve 19-Joint Skeletal Rig & Skin Pixel Buffer
-    const walkImageData = CanvasPixelProcessor.synthesizeWalkFrame(
+    const walkImageData = this.rig.renderRiggedFrame(
       frame,
       this.walkPhase,
       this.walkIntensity,
@@ -818,7 +848,10 @@ export class PixelKnight {
 
     // 7. Optional 19-Joint Spine2D Bone & Joint Skeleton Overlay
     if (showSkeleton || showHitbox) {
-      CanvasPixelProcessor.sharedRig.drawDebugSkeleton(ctx, this.x, this.y - this.z, this.scale, flipX);
+      this.rig.drawDebugSkeleton(ctx, this.x, this.y - this.z, this.scale, flipX);
     }
   }
 }
+
+/** The included knight (kept for backwards compatibility): same as GameCharacter with the knight rig. */
+export class PixelKnight extends GameCharacter {}

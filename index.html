@@ -278,6 +278,7 @@
       <button class="tab-btn" data-mode="particles">💥 2. Pixel Particles &amp; Shatter</button>
       <button class="tab-btn" data-mode="voxel">🧊 3. 3D Voxel Point-Cloud</button>
       <button class="tab-btn" data-mode="inspector">🔬 4. Raw ImageData Inspector</button>
+      <a class="tab-btn" href="editor.html" style="text-decoration:none">🛠 Rig Your Own Character</a>
     </div>
   </header>
 
@@ -377,6 +378,10 @@
           <button class="action-btn danger" id="btnShatter">💥 Explode Pixels</button>
           <button class="action-btn primary" id="btnDecodeGif">⚡ Live Decode img.gif</button>
         </div>
+        <label class="action-btn" style="display:block;text-align:center;margin-top:8px;cursor:pointer;font-size:12px">
+          📂 Load Your Character (character.json + sheet .png + atlas .json)
+          <input type="file" id="fileCharacter" multiple accept=".json,.png,.webp" style="display:none" />
+        </label>
       </div>
 
       <!-- Card 3: Real-Time Pixel Loupe Inspector -->
@@ -396,10 +401,12 @@
       <!-- Card 4: Copy-Paste Game Usage Snippet -->
       <div class="card">
         <h2><span>📦 Drop-In JS Game Usage</span></h2>
-        <pre class="code-snippet">import { PixelKnight } from './pixel_knight.js';
+        <pre class="code-snippet">import { GameCharacter } from './pixel_knight.js';
 
-const player = new PixelKnight({ x: 400, y: 300 });
-await player.loadFromSpriteSheet();
+// any character made with editor.html
+const player = await GameCharacter.load(
+  './characters/knight/character.json', { x: 400, y: 300 }
+);
 
 function gameLoop(dt) {
   player.update(dt, { right: keys.KeyD, up: keys.KeyW });
@@ -414,6 +421,7 @@ function gameLoop(dt) {
 
   <script type="module">
     import { PixelKnight, CanvasPixelProcessor } from './pixel_knight.js';
+    import { loadImage, framesFromSheet } from './sprite_tools.js';
 
     const canvas = document.getElementById('mainCanvas');
     const ctx = canvas.getContext('2d');
@@ -612,7 +620,7 @@ function gameLoop(dt) {
     // =========================================================================
     // INITIALIZATION
     // =========================================================================
-    knight.loadFromSpriteSheet('./knight_spritesheet.png', './knight_atlas.json').then(() => {
+    knight.loadFromSpriteSheet('./characters/knight/knight_spritesheet.png', './characters/knight/knight_atlas.json').then(() => {
       hudStatus.innerHTML = `<strong>Ready:</strong> 36 Angles Loaded • Pixel-Rigged Foot Walking Engine Active`;
       syncParticleCloud(true);
     });
@@ -671,9 +679,10 @@ function gameLoop(dt) {
       btnDecodeGif.textContent = '⏳ Decoding img.gif...';
       hudStatus.innerHTML = `<strong>WebCodecs ImageDecoder:</strong> Decoding &amp; de-dithering raw frames from <code>img.gif</code>...`;
       try {
-        const frames = await CanvasPixelProcessor.decodeGifToPixelFrames('./img.gif', 36);
+        const frames = await CanvasPixelProcessor.decodeGifToPixelFrames('./characters/knight/img.gif', 36);
         if (frames.length > 0) {
-          knight.frames = frames;
+          knight.setProfile(CanvasPixelProcessor.sharedRig.profile);
+          knight.setFrames(frames);
           syncParticleCloud(true);
           hudStatus.innerHTML = `<strong>Live GIF Decoded:</strong> ${frames.length} raw frames extracted &amp; background-keyed in browser!`;
         }
@@ -682,6 +691,35 @@ function gameLoop(dt) {
       } finally {
         btnDecodeGif.disabled = false;
         btnDecodeGif.textContent = '⚡ Live Decode img.gif';
+      }
+    });
+
+    // Load a character made with editor.html: its profile, sprite sheet and atlas
+    document.getElementById('fileCharacter').addEventListener('change', async e => {
+      const files = [...e.target.files];
+      try {
+        let profile = null, atlas = null, sheet = null;
+        for (const f of files) {
+          if (f.type.startsWith('image/')) {
+            sheet = f;
+          } else {
+            const json = JSON.parse(await f.text());
+            if (json.joints) profile = json;
+            else if (json.frames) atlas = json;
+          }
+        }
+        if (!profile || !atlas || !sheet) {
+          throw new Error('select all three files: character.json, the sprite sheet image and its atlas .json');
+        }
+        const img = await loadImage(URL.createObjectURL(sheet));
+        knight.setProfile(profile);
+        knight.setFrames(framesFromSheet(img, atlas));
+        syncParticleCloud(true);
+        hudStatus.innerHTML = `<strong>Character loaded:</strong> ${profile.name} • ${knight.frames.length} angles`;
+      } catch (err) {
+        hudStatus.innerHTML = `<strong>Could not load character:</strong> ${err.message}`;
+      } finally {
+        e.target.value = '';
       }
     });
 
@@ -1119,7 +1157,7 @@ function gameLoop(dt) {
       ctx.restore();
 
       if (showSkeleton) {
-        CanvasPixelProcessor.sharedRig.drawDebugSkeleton(ctx, cx, cy, drawScale, flipX);
+        knight.rig.drawDebugSkeleton(ctx, cx, cy, drawScale, flipX);
       }
     }
 

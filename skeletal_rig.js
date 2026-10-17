@@ -1,77 +1,188 @@
 /**
  * skeletal_rig.js
  * ============================================================================
- * 3D-Projected Hierarchical Bone & Joint Kinematics + Layered Skinned Pixel Engine
+ * Profile-driven 3D-projected bone rig + layered pixel skinning for ANY biped sprite.
  *
- * Skeleton (joints, character space, +X = viewer Left->Right at 0°, +Y = Down, +Z = Forward):
+ * A character is described by a JSON "character profile" (see KNIGHT_PROFILE and
+ * README "Character profile"): joint positions measured on the sprite, segmentation sizes,
+ * cloth colors and gait style. Make one for your own sprite with editor.html.
+ *
+ * Skeleton (character space, +X = viewer Left->Right at 0°, +Y = Down, +Z = Forward):
  * - Pelvis (Root) -> Spine -> Neck -> HeadTop
  * - Shoulder L/R -> Elbow L/R -> Wrist L/R
- * - Hip L/R -> Knee L/R (Hinge) -> Ankle L/R -> Toe L/R (+ virtual Heel for ground contact)
+ * - Hip L/R -> Knee L/R (Hinge) -> Ankle L/R -> Toe L/R + Heel L/R (ground contact)
  * - Tabard (front cloth) & Cape (back cloth), both hanging from the belt
  *
  * Skinning works in layers. Every sprite frame is segmented once (cached) into
  * body-part labels using the rest pose projected at that frame's real turntable
- * angle: arms are found with capsules around the arm bones (not by x-distance from
- * the sprite center, which in side view made the chest/back swing with the arm),
- * red cloth is split into front tabard / back cape, and legs are split per side.
- * Each layer then inverse-warps only the pixels carrying its own label and the
- * layers are painted back-to-front, so a part can never drag pixels of another.
+ * angle: arms are found with capsules around the arm bones, cloth by color and split
+ * into front tabard / back cape, and legs per side. Each layer then inverse-warps only
+ * the pixels carrying its own label and the layers are painted back-to-front, so a part
+ * can never drag pixels of another.
  */
 
-// Sprite frames are sampled uniformly from the GIF, but the turntable does not rotate
-// uniformly. Measured from the sprite's hand / shoulder positions: frame angle -> real yaw.
-const VISUAL_YAW_TABLE = [
-  [0, 0], [20, 12], [46, 38], [67, 57], [77, 71], [87, 83],
-  [93, 93], [103, 109], [113, 121], [134, 150], [160, 170], [180, 180]
-];
+export const JOINT_PARENTS = {
+  pelvis: null,
+  spine: 'pelvis',
+  neck: 'spine',
+  headTop: 'neck',
+  shoulderL: 'spine', elbowL: 'shoulderL', wristL: 'elbowL',
+  shoulderR: 'spine', elbowR: 'shoulderR', wristR: 'elbowR',
+  tabardRoot: 'pelvis', tabardTip: 'tabardRoot',
+  capeRoot: 'pelvis', capeTip: 'capeRoot',
+  hipL: 'pelvis', kneeL: 'hipL', ankleL: 'kneeL', toeL: 'ankleL', heelL: 'ankleL',
+  hipR: 'pelvis', kneeR: 'hipR', ankleR: 'kneeR', toeR: 'ankleR', heelR: 'ankleR'
+};
+export const JOINT_NAMES = Object.keys(JOINT_PARENTS);
 
-// The chibi arms do not follow a rigid 3D shoulder model (the far arm stays wide until it
-// disappears behind the body), so their rest positions are measured from the sprite:
-// [frameAngle, shoulderL.x, wristL.x, shoulderR.x, wristR.x, farArmVisible]
-// (L = arm on the viewer's left in front view = the near arm for 0..180°)
-const ARM_REST_TABLE = [
-  [0, 62, 35, 168, 200, 1], [20, 60, 35, 172, 197, 1], [46, 62, 45, 170, 190, 1],
-  [67, 70, 52, 162, 175, 1], [77, 80, 70, 150, 160, 0], [87, 90, 85, 140, 150, 0],
-  [93, 90, 100, 130, 140, 0], [103, 110, 125, 110, 120, 0], [113, 120, 142, 100, 100, 0],
-  [134, 145, 180, 75, 55, 1], [160, 165, 197, 62, 45, 1], [180, 168, 202, 62, 40, 1]
-];
-const ARM_REST_Y = { shoulder: 158, elbow: 195, wrist: 230 };
+/** Joints of the left side and their right-side twins (for symmetric editing). */
+export const MIRROR_JOINTS = {
+  shoulderL: 'shoulderR', elbowL: 'elbowR', wristL: 'wristR',
+  hipL: 'hipR', kneeL: 'kneeR', ankleL: 'ankleR', toeL: 'toeR', heelL: 'heelR'
+};
 
-function armRestAt(lookupDeg) {
-  const t = ARM_REST_TABLE;
-  let i = 1;
-  while (i < t.length - 1 && lookupDeg > t[i][0]) i++;
-  const a = t[i - 1], b = t[i];
-  const k = Math.max(0, Math.min(1, (lookupDeg - a[0]) / (b[0] - a[0])));
-  const lerp = (n) => a[n] + (b[n] - a[n]) * k;
-  const nearest = k < 0.5 ? a : b;
-  return { shL: lerp(1), wrL: lerp(2), shR: lerp(3), wrR: lerp(4), farArmVisible: nearest[5] === 1 };
-}
-
-const LBL = {
+export const SEGMENT_LABELS = {
   NONE: 0, TORSO: 1, HEAD: 2, FILL: 3,
   ARM_L: 4, ARM_R: 5,
   LEG_L: 6, LEG_R: 7, LEGS: 8,
   CLOTH_F: 9, CLOTH_B: 10
 };
+const LBL = SEGMENT_LABELS;
 
-const ORIGIN_X = 116;
-const ORIGIN_Y = 232;
-const CAMERA_TILT = 0.22; // fake top-down camera: points moving toward the camera rise on screen
+export const DEFAULT_GAIT = {
+  hipAmplitude: 0.5,   // rad, thigh swing at full walk intensity
+  kneeFlex: 1.05,      // rad, peak knee bend in swing
+  footRoll: 1,         // heel-strike / toe-off strength
+  armSwing: 0.38,      // rad, shoulder swing
+  elbowFlex: 0.38,     // rad, extra elbow bend when the arm is forward
+  lean: 0.07,          // rad, forward spine lean while walking
+  pelvisYaw: 0.12,     // rad, pelvis twist with the stride
+  tabardPush: 0.75,    // how much the forward thigh pushes the front cloth
+  capeTrail: 0.16,     // rad, how far the back cloth trails behind
+  cameraTilt: 0.22     // fake top-down camera: points moving toward the camera rise on screen
+};
 
-const HIP_AMPLITUDE = 0.5;   // rad, thigh swing at full walk intensity
-const LEG_LENGTH = 86;       // hip -> sole, sprite pixels (for stride matching)
+/**
+ * The included knight. Joint positions are absolute: x / y are pixels in the front (0°) frame,
+ * z is the forward offset from the pelvis in pixels as seen in the side (90°) frame.
+ */
+export const KNIGHT_PROFILE = {
+  version: 1,
+  name: 'Knight',
+  frameWidth: 220,
+  frameHeight: 335,
+  sprite: { sheet: 'knight_spritesheet.png', atlas: 'knight_atlas.json' },
+  joints: {
+    pelvis: { x: 116, y: 232, z: 0 },
+    spine: { x: 116, y: 194, z: 0 },
+    neck: { x: 116, y: 148, z: 0 },
+    headTop: { x: 116, y: 12, z: 2 },
+    shoulderL: { x: 64, y: 158, z: -26 }, elbowL: { x: 46, y: 195, z: -22 }, wristL: { x: 31, y: 230, z: -20 },
+    shoulderR: { x: 168, y: 158, z: -26 }, elbowR: { x: 186, y: 195, z: -22 }, wristR: { x: 201, y: 230, z: -20 },
+    tabardRoot: { x: 116, y: 212, z: 12 }, tabardTip: { x: 116, y: 280, z: 16 },
+    capeRoot: { x: 116, y: 208, z: -26 }, capeTip: { x: 116, y: 282, z: -30 },
+    hipL: { x: 92, y: 238, z: 0 }, kneeL: { x: 84, y: 278, z: 2 }, ankleL: { x: 82, y: 305, z: 0 },
+    toeL: { x: 82, y: 317, z: 52 }, heelL: { x: 82, y: 318, z: -12 },
+    hipR: { x: 140, y: 238, z: 0 }, kneeR: { x: 148, y: 278, z: 2 }, ankleR: { x: 150, y: 305, z: 0 },
+    toeR: { x: 150, y: 317, z: 52 }, heelR: { x: 150, y: 318, z: -12 }
+  },
+  // Sprite frames are sampled uniformly from the GIF, but the turntable does not rotate
+  // uniformly. Measured from the sprite's hand / shoulder positions: frame angle -> real yaw.
+  yawTable: [
+    [0, 0], [20, 12], [46, 38], [67, 57], [77, 71], [87, 83],
+    [93, 93], [103, 109], [113, 121], [134, 150], [160, 170], [180, 180]
+  ],
+  // The chibi arms do not follow a rigid 3D shoulder model (the far arm stays wide until it
+  // disappears behind the body), so their rest x positions are measured per angle:
+  // [frameAngle, shoulderL.x, wristL.x, shoulderR.x, wristR.x, farArmVisible]
+  armTable: [
+    [0, 62, 35, 168, 200, 1], [20, 60, 35, 172, 197, 1], [46, 62, 45, 170, 190, 1],
+    [67, 70, 52, 162, 175, 1], [77, 80, 70, 150, 160, 0], [87, 90, 85, 140, 150, 0],
+    [93, 90, 100, 130, 140, 0], [103, 110, 125, 110, 120, 0], [113, 120, 142, 100, 100, 0],
+    [134, 145, 180, 75, 55, 1], [160, 165, 197, 62, 45, 1], [180, 168, 202, 62, 40, 1]
+  ],
+  segmentation: {
+    upperArmRadius: 17,
+    forearmRadius: 17,
+    handRadius: 19,
+    handLength: 16,
+    legRadius: 30,
+    // The chibi thighs are hidden under the chainmail skirt, which stays with the pelvis;
+    // only the greaves and boots below it are moved by the leg bones.
+    legTopSide: 22,
+    legTopFront: 16
+  },
+  cloth: { mode: 'dominantRed', minOverGreen: 22, minOverBlue: 12, colors: [], tolerance: 40 },
+  gait: { ...DEFAULT_GAIT }
+};
 
-function visualYawDeg(lookupDeg) {
-  const t = VISUAL_YAW_TABLE;
-  if (lookupDeg <= t[0][0]) return t[0][1];
-  for (let i = 1; i < t.length; i++) {
-    if (lookupDeg <= t[i][0]) {
-      const k = (lookupDeg - t[i - 1][0]) / (t[i][0] - t[i - 1][0]);
-      return t[i - 1][1] + (t[i][1] - t[i - 1][1]) * k;
+/** Character height in pixels (head top to sole) of a profile. */
+function profileHeight(joints) {
+  return Math.max(1, Math.max(joints.heelL.y, joints.toeL.y) - joints.headTop.y);
+}
+
+/**
+ * Fills in defaults for a (possibly partial / older) profile. Segmentation sizes that are not
+ * given are scaled from the knight by character height, so small sprites work too.
+ */
+export function normalizeProfile(profile) {
+  const p = JSON.parse(JSON.stringify(profile));
+  p.version = p.version ?? 1;
+  p.name = p.name ?? 'Character';
+  for (const name of JOINT_NAMES) {
+    if (!p.joints?.[name]) throw new Error(`Character profile is missing joint "${name}"`);
+    p.joints[name].z = p.joints[name].z ?? 0;
+  }
+  p.frameWidth = p.frameWidth ?? 220;
+  p.frameHeight = p.frameHeight ?? 335;
+  p.yawTable = p.yawTable ?? null;
+  p.armTable = p.armTable ?? null;
+
+  const unit = profileHeight(p.joints) / profileHeight(KNIGHT_PROFILE.joints);
+  const seg = {};
+  for (const [k, v] of Object.entries(KNIGHT_PROFILE.segmentation)) seg[k] = v * unit;
+  p.segmentation = { ...seg, ...(p.segmentation || {}) };
+  p.cloth = { ...KNIGHT_PROFILE.cloth, mode: 'none', ...(p.cloth || {}) };
+  p.gait = { ...DEFAULT_GAIT, ...(p.gait || {}) };
+  return p;
+}
+
+/** Profile -> readable JSON text (one line per joint / table row). */
+export function serializeProfile(profile) {
+  const round = (v) => Math.round(v * 100) / 100;
+  const lines = ['{'];
+  const entries = Object.entries(profile);
+  entries.forEach(([key, value], i) => {
+    const comma = i < entries.length - 1 ? ',' : '';
+    if (key === 'joints') {
+      lines.push('  "joints": {');
+      const names = Object.keys(value);
+      names.forEach((n, k) => {
+        const { x, y, z } = value[n];
+        lines.push(`    "${n}": { "x": ${round(x)}, "y": ${round(y)}, "z": ${round(z ?? 0)} }${k < names.length - 1 ? ',' : ''}`);
+      });
+      lines.push(`  }${comma}`);
+    } else if (Array.isArray(value) && value.length && Array.isArray(value[0])) {
+      lines.push(`  "${key}": [`);
+      value.forEach((row, k) => lines.push(`    ${JSON.stringify(row.map(round))}${k < value.length - 1 ? ',' : ''}`));
+      lines.push(`  ]${comma}`);
+    } else {
+      lines.push(`  "${key}": ${JSON.stringify(value)}${comma}`);
+    }
+  });
+  lines.push('}');
+  return lines.join('\n') + '\n';
+}
+
+function interpTable(table, x) {
+  if (x <= table[0][0]) return table[0][1];
+  for (let i = 1; i < table.length; i++) {
+    if (x <= table[i][0]) {
+      const k = (x - table[i - 1][0]) / (table[i][0] - table[i - 1][0]);
+      return table[i - 1][1] + (table[i][1] - table[i - 1][1]) * k;
     }
   }
-  return t[t.length - 1][1];
+  return table[table.length - 1][1];
 }
 
 function distToSegment(px, py, ax, ay, bx, by) {
@@ -106,47 +217,31 @@ function smoothBump(v, power = 1) {
   return Math.pow(Math.max(0, v), power);
 }
 
-export class KnightSkeletalRig {
-  constructor() {
-    // Rest-pose bone offsets (relative to parent), fitted to the sprite:
-    // shoulders sit slightly behind the body center (visible in profile), arms hang down
-    // to the hands at y≈232, boots are ~70px apart in front view and point forward in profile.
-    this.restJoints = {
-      pelvis:     { x:   0, y:    0, z:   0, parent: null },
-      spine:      { x:   0, y:  -38, z:   0, parent: 'pelvis' },
-      neck:       { x:   0, y:  -46, z:   0, parent: 'spine' },
-      headTop:    { x:   0, y: -136, z:   2, parent: 'neck' },
+export class SkeletalRig {
+  /** @param profile character profile object (see KNIGHT_PROFILE); defaults to the knight */
+  constructor(profile = KNIGHT_PROFILE) {
+    this.profile = normalizeProfile(profile);
+    const pj = this.profile.joints;
 
-      shoulderL:  { x: -52, y:  -36, z: -26, parent: 'spine' },
-      elbowL:     { x: -18, y:   37, z:   4, parent: 'shoulderL' },
-      wristL:     { x: -15, y:   35, z:   2, parent: 'elbowL' },
+    // Absolute profile joints -> bone offsets relative to the parent joint
+    this.restJoints = {};
+    for (const name of JOINT_NAMES) {
+      const parent = JOINT_PARENTS[name];
+      const a = pj[name];
+      const b = parent ? pj[parent] : { x: a.x, y: a.y, z: 0 };
+      this.restJoints[name] = { x: a.x - b.x, y: a.y - b.y, z: parent ? a.z - b.z : 0, parent };
+    }
+    this.originX = pj.pelvis.x;
+    this.originY = pj.pelvis.y;
+    this.unit = profileHeight(pj) / profileHeight(KNIGHT_PROFILE.joints);
 
-      shoulderR:  { x:  52, y:  -36, z: -26, parent: 'spine' },
-      elbowR:     { x:  18, y:   37, z:   4, parent: 'shoulderR' },
-      wristR:     { x:  15, y:   35, z:   2, parent: 'elbowR' },
-
-      tabardRoot: { x:   0, y:  -20, z:  12, parent: 'pelvis' },
-      tabardTip:  { x:   0, y:   68, z:   4, parent: 'tabardRoot' },
-      capeRoot:   { x:   0, y:  -24, z: -26, parent: 'pelvis' },
-      capeTip:    { x:   0, y:   74, z:  -4, parent: 'capeRoot' },
-
-      hipL:       { x: -24, y:    6, z:   0, parent: 'pelvis' },
-      kneeL:      { x:  -8, y:   40, z:   2, parent: 'hipL' },
-      ankleL:     { x:  -2, y:   27, z:  -2, parent: 'kneeL' },
-      toeL:       { x:   0, y:   12, z:  52, parent: 'ankleL' },
-      heelL:      { x:   0, y:   13, z: -12, parent: 'ankleL' },
-
-      hipR:       { x:  24, y:    6, z:   0, parent: 'pelvis' },
-      kneeR:      { x:   8, y:   40, z:   2, parent: 'hipR' },
-      ankleR:     { x:   2, y:   27, z:  -2, parent: 'kneeR' },
-      toeR:       { x:   0, y:   12, z:  52, parent: 'ankleR' },
-      heelR:      { x:   0, y:   13, z: -12, parent: 'ankleR' }
-    };
-
-    this.pose = KnightSkeletalRig.zeroPose();
+    this.pose = SkeletalRig.zeroPose();
     this.joints2D = {};
-    this._rest3D = this._solveFK(KnightSkeletalRig.zeroPose());
+    this._segCache = new WeakMap();
+    this._rest3D = this._solveFK(SkeletalRig.zeroPose());
     this._restSole = Math.max(this._rest3D.heelL.y, this._rest3D.toeL.y);
+    this.floorY = this.originY + this._restSole;
+    this.legLength = this._restSole - this._rest3D.hipL.y;
   }
 
   static POSES_PER_CYCLE = 32;
@@ -181,19 +276,37 @@ export class KnightSkeletalRig {
     };
   }
 
+  /** Real turntable yaw (degrees) of a sprite frame drawn at `frameAngleDeg`. */
+  visualYawDeg(frameAngleDeg) {
+    const t = this.profile.yawTable;
+    return t ? interpTable(t, frameAngleDeg) : frameAngleDeg;
+  }
+
+  _armRestAt(frameAngleDeg) {
+    const t = this.profile.armTable;
+    if (!t) return null;
+    let i = 1;
+    while (i < t.length - 1 && frameAngleDeg > t[i][0]) i++;
+    const a = t[i - 1], b = t[i];
+    const k = Math.max(0, Math.min(1, (frameAngleDeg - a[0]) / (b[0] - a[0] || 1)));
+    const lerp = (n) => a[n] + (b[n] - a[n]) * k;
+    const nearest = k < 0.5 ? a : b;
+    return { shL: lerp(1), wrL: lerp(2), shR: lerp(3), wrR: lerp(4), farArmVisible: nearest[5] === 1 };
+  }
+
   /**
    * Horizontal distance the body travels per full gait cycle (two steps) in sprite pixels.
    * Advance walkPhase by `speed * 2π / strideCycleLength()` to keep the planted foot from sliding.
    */
   strideCycleLength(walkIntensity = 1) {
     const w = Math.max(0.25, Math.min(1, walkIntensity));
-    return 4 * LEG_LENGTH * Math.sin(HIP_AMPLITUDE * w);
+    return 4 * this.legLength * Math.sin(this.profile.gait.hipAmplitude * w);
   }
 
   /**
    * Gait model (phase φ per leg, left leg uses walkPhase, right leg walkPhase + π):
    * - Hip:   flexion = sin φ  → heel strike at φ = π/2, toe-off at φ ≈ 3π/2
-   * - Knee:  hinge, flexes only backward; ~60° in early swing so the boot clears the floor,
+   * - Knee:  hinge, flexes only backward; ~60° in early swing so the foot clears the floor,
    *          nearly straight at heel strike, small cushion flex just after heel strike
    * - Foot:  absolute pitch: toe up at heel strike, flat through mid stance,
    *          heel rises before toe-off, slightly toe up during swing
@@ -202,14 +315,15 @@ export class KnightSkeletalRig {
    */
   solveGaitKinematics(walkPhase, walkIntensity, jumpZ = 0, attackTimer = 0) {
     const p = this.pose;
+    const g = this.profile.gait;
     const w = Math.max(0, Math.min(1, walkIntensity));
     const phiL = walkPhase;
     const phiR = walkPhase + Math.PI;
 
     const solveLegJoints = (phi) => {
-      const hipPitch = (Math.sin(phi) + 0.12 * Math.sin(2 * phi - 0.6)) * HIP_AMPLITUDE * w;
+      const hipPitch = (Math.sin(phi) + 0.12 * Math.sin(2 * phi - 0.6)) * g.hipAmplitude * w;
 
-      const swingFlex = smoothBump(Math.cos(phi + 0.35), 1.3) * 1.05;
+      const swingFlex = smoothBump(Math.cos(phi + 0.35), 1.3) * g.kneeFlex;
       const loadingFlex = smoothBump(Math.cos(phi - 2.05), 2) * 0.24;
       const kneePitch = (swingFlex + loadingFlex) * w;
 
@@ -217,7 +331,7 @@ export class KnightSkeletalRig {
         0.24 * smoothBump(Math.cos(phi - 1.3), 2) -
         0.38 * smoothBump(Math.cos(phi - 4.85), 3) +
         0.10 * smoothBump(Math.cos(phi + 0.2), 1)
-      ) * w;
+      ) * g.footRoll * w;
       const shinPitch = hipPitch - kneePitch;
       return { hipPitch, kneePitch, anklePitch: footPitch - shinPitch };
     };
@@ -260,11 +374,10 @@ export class KnightSkeletalRig {
     p.anklePitchR = legR.anklePitch;
 
     // Arms swing opposite to the leg on the same side; the elbow bends more when the arm is forward
-    const armSwing = 0.38;
-    p.shoulderPitchL = -Math.sin(phiL) * armSwing * w;
-    p.elbowPitchL = (0.12 + smoothBump(-Math.sin(phiL)) * 0.38) * w;
-    p.shoulderPitchR = -Math.sin(phiR) * armSwing * w;
-    p.elbowPitchR = (0.12 + smoothBump(-Math.sin(phiR)) * 0.38) * w;
+    p.shoulderPitchL = -Math.sin(phiL) * g.armSwing * w;
+    p.elbowPitchL = (0.12 + smoothBump(-Math.sin(phiL)) * g.elbowFlex) * w;
+    p.shoulderPitchR = -Math.sin(phiR) * g.armSwing * w;
+    p.elbowPitchR = (0.12 + smoothBump(-Math.sin(phiR)) * g.elbowFlex) * w;
 
     if (attackTimer > 0) {
       const slash = Math.sin((1 - attackTimer / 0.42) * Math.PI);
@@ -274,19 +387,19 @@ export class KnightSkeletalRig {
 
     // Pelvis rotates with the swinging leg, shoulders counter-rotate; slight forward lean
     p.pelvisRoll = Math.sin(2 * walkPhase) * 0.035 * w;
-    p.pelvisYaw = Math.sin(walkPhase) * 0.12 * w;
-    p.spinePitch = 0.07 * w + Math.cos(2 * walkPhase) * 0.015 * w;
+    p.pelvisYaw = Math.sin(walkPhase) * g.pelvisYaw * w;
+    p.spinePitch = g.lean * w + Math.cos(2 * walkPhase) * 0.015 * w;
     p.spineRoll = -p.pelvisRoll * 0.6;
     p.neckPitch = -p.spinePitch * 0.8;
     p.neckYaw = -p.pelvisYaw * 0.5;
 
     // Front tabard gets pushed by whichever thigh swings forward; back cape trails behind
     const maxHipFlex = Math.max(p.hipPitchL, p.hipPitchR, 0);
-    p.tabardPitch = maxHipFlex * 0.75 + Math.sin(2 * walkPhase - 0.8) * 0.05 * w;
-    p.capePitch = -(0.16 + 0.06 * Math.sin(2 * walkPhase - 1.2)) * w;
+    p.tabardPitch = maxHipFlex * g.tabardPush + Math.sin(2 * walkPhase - 0.8) * 0.05 * w;
+    p.capePitch = -(g.capeTrail + 0.06 * Math.sin(2 * walkPhase - 1.2)) * w;
   }
 
-  /** Forward kinematics in 3D character space. */
+  /** Forward kinematics in 3D character space (relative to the pelvis). */
   _solveFK(p, mirrored = false) {
     const r = this.restJoints;
     const j = {};
@@ -348,7 +461,7 @@ export class KnightSkeletalRig {
   }
 
   /**
-   * Solves 3D FK and projects all joints into the 220x335 sprite space.
+   * Solves 3D FK and projects all joints into sprite frame space.
    * @param normAngleDeg   current facing (0..360), decides mirroring
    * @param frameAngleDeg  angle of the sprite frame actually drawn (0..180); the rest pose is
    *                       projected at this angle so bones line up with the pixels of that frame
@@ -357,9 +470,10 @@ export class KnightSkeletalRig {
     const norm = ((normAngleDeg % 360) + 360) % 360;
     const isMirrored = norm > 180;
     const lookupDeg = frameAngleDeg ?? (isMirrored ? 360 - norm : norm);
-    const yawRad = (visualYawDeg(lookupDeg) * Math.PI) / 180;
+    const yawRad = (this.visualYawDeg(lookupDeg) * Math.PI) / 180;
     const cosY = Math.cos(yawRad);
     const sinY = Math.sin(yawRad);
+    const tilt = this.profile.gait.cameraTilt;
 
     const j3D = this._solveFK(this.pose, isMirrored);
     const rest = this._rest3D;
@@ -368,10 +482,10 @@ export class KnightSkeletalRig {
     for (const key of Object.keys(j3D)) {
       const pt = j3D[key];
       const rs = rest[key];
-      const restX = ORIGIN_X + rs.x * cosY + rs.z * sinY;
-      const restY = ORIGIN_Y + rs.y;
-      const x = ORIGIN_X + pt.x * cosY + pt.z * sinY;
-      const y = ORIGIN_Y + pt.y - (pt.z - rs.z) * cosY * CAMERA_TILT;
+      const restX = this.originX + rs.x * cosY + rs.z * sinY;
+      const restY = this.originY + rs.y;
+      const x = this.originX + pt.x * cosY + pt.z * sinY;
+      const y = this.originY + pt.y - (pt.z - rs.z) * cosY * tilt;
       projected[key] = {
         x, y, restX, restY,
         dx: x - restX,
@@ -380,23 +494,38 @@ export class KnightSkeletalRig {
       };
     }
 
-    // Snap the arm rest pose onto the measured sprite arms; keep the model's motion deltas
-    const arm = armRestAt(lookupDeg);
-    const setRest = (name, rx, ry) => {
-      const pj = projected[name];
-      pj.restX = rx;
-      pj.restY = ry;
-      pj.x = rx + pj.dx;
-      pj.y = ry + pj.dy;
-    };
-    for (const [s, sh, wr] of [['L', arm.shL, arm.wrL], ['R', arm.shR, arm.wrR]]) {
-      setRest('shoulder' + s, sh, ARM_REST_Y.shoulder);
-      setRest('elbow' + s, sh + (wr - sh) * 0.55, ARM_REST_Y.elbow);
-      setRest('wrist' + s, wr, ARM_REST_Y.wrist);
+    // Optional measured arm table: snap the arm rest pose onto the sprite's arms and keep
+    // the model's motion deltas
+    const arm = this._armRestAt(lookupDeg);
+    if (arm) {
+      const pj = this.profile.joints;
+      const setRest = (name, rx, ry) => {
+        const p = projected[name];
+        p.restX = rx;
+        p.restY = ry;
+        p.x = rx + p.dx;
+        p.y = ry + p.dy;
+      };
+      for (const [s, sh, wr] of [['L', arm.shL, arm.wrL], ['R', arm.shR, arm.wrR]]) {
+        setRest('shoulder' + s, sh, pj['shoulder' + s].y);
+        setRest('elbow' + s, sh + (wr - sh) * 0.55, pj['elbow' + s].y);
+        setRest('wrist' + s, wr, pj['wrist' + s].y);
+      }
     }
 
     this.joints2D = projected;
     return projected;
+  }
+
+  /** Rest-pose joints projected for a sprite frame angle (does not change the current pose). */
+  restJoints2D(frameAngleDeg) {
+    const savedPose = this.pose;
+    const savedJoints = this.joints2D;
+    this.pose = SkeletalRig.zeroPose();
+    const j = this.computeProjectedJoints(0, frameAngleDeg);
+    this.pose = savedPose;
+    this.joints2D = savedJoints;
+    return j;
   }
 
   /**
@@ -415,7 +544,7 @@ export class KnightSkeletalRig {
 
     let dTheta = 0;
     let invScale = 1;
-    if (restLen >= 16) {
+    if (restLen >= 16 * this.unit) {
       dTheta = Math.atan2(cdx, cdy) - Math.atan2(rdx, rdy);
       if (dTheta > Math.PI) dTheta -= 2 * Math.PI;
       if (dTheta < -Math.PI) dTheta += 2 * Math.PI;
@@ -441,7 +570,7 @@ export class KnightSkeletalRig {
    * Evaluates a bone chain: the pixel is mapped back through every bone, and the bone whose
    * rest segment the result lands closest to wins (blending the two best near joints).
    * Unlike a fixed y-band per joint, this stays correct when a joint is bent or a limb swings
-   * sideways, and it never pulls a bent boot's pixels through the shin.
+   * sideways, and it never pulls a bent foot's pixels through the shin.
    */
   _evalChain(chain, x, y) {
     // Hot path (runs per pixel per layer): no allocations, squared distances
@@ -482,33 +611,46 @@ export class KnightSkeletalRig {
     return out;
   }
 
+  /** True when a pixel color belongs to the character's cloth (tabard / cape). */
+  _isClothColor(r, g, b) {
+    const c = this.profile.cloth;
+    if (c.mode === 'dominantRed') return r > g + c.minOverGreen && r > b + c.minOverBlue;
+    if (c.mode === 'colors') {
+      const tol2 = c.tolerance * c.tolerance;
+      for (const [cr, cg, cb] of c.colors) {
+        const dr = r - cr, dg = g - cg, db = b - cb;
+        if (dr * dr + dg * dg + db * db <= tol2) return true;
+      }
+    }
+    return false;
+  }
+
   /**
    * Segments a sprite frame into body-part labels (cached per frame). Also builds a
    * torso "fill" image: where the near arm covers the body in profile, the hidden body
    * is reconstructed from the neighbouring torso pixels so the arm can swing away
    * without leaving a hole or a frozen copy of itself.
    */
-  _getFrameSegmentation(frame, lookupDeg) {
+  getFrameSegmentation(frame, lookupDeg) {
     const key = Math.round(lookupDeg * 100);
-    if (frame._rigSeg && frame._rigSeg.key === key) return frame._rigSeg;
+    const cached = this._segCache.get(frame);
+    if (cached && cached.key === key) return cached;
 
     const w = frame.width;
     const h = frame.height;
     const src = frame.imageData.data;
+    const S = this.profile.segmentation;
+    const u = this.unit;
 
-    const savedPose = this.pose;
-    const savedJoints = this.joints2D;
-    this.pose = KnightSkeletalRig.zeroPose();
-    const j = this.computeProjectedJoints(0, lookupDeg);
-    this.pose = savedPose;
-    this.joints2D = savedJoints;
+    const j = this.restJoints2D(lookupDeg);
 
-    const yaw = (visualYawDeg(lookupDeg) * Math.PI) / 180;
+    const yaw = (this.visualYawDeg(lookupDeg) * Math.PI) / 180;
     const sinY = Math.sin(yaw);
     const cosY = Math.cos(yaw);
     const sideWeight = sinY * sinY;
     const sharedLegs = sideWeight > 0.72;     // both legs overlap in the sprite
-    const farArmVisible = armRestAt(lookupDeg).farArmVisible; // hidden behind the body in profile
+    const armTableEntry = this._armRestAt(lookupDeg);
+    const farArmVisible = armTableEntry ? armTableEntry.farArmVisible : sideWeight < 0.75;
 
     const armCapsule = (s) => {
       const sh = j['shoulder' + s], el = j['elbow' + s], wr = j['wrist' + s];
@@ -516,16 +658,16 @@ export class KnightSkeletalRig {
       const fl = Math.hypot(fx, fy) || 1;
       return {
         sh, el, wr,
-        tipX: wr.restX + (fx / fl) * 16,
-        tipY: wr.restY + (fy / fl) * 16
+        tipX: wr.restX + (fx / fl) * S.handLength,
+        tipY: wr.restY + (fy / fl) * S.handLength
       };
     };
     const capL = armCapsule('L');
     const capR = armCapsule('R');
     const armDist = (c, x, y) => Math.min(
-      distToSegment(x, y, c.sh.restX, c.sh.restY, c.el.restX, c.el.restY) - 17,
-      distToSegment(x, y, c.el.restX, c.el.restY, c.wr.restX, c.wr.restY) - 17,
-      distToSegment(x, y, c.wr.restX, c.wr.restY, c.tipX, c.tipY) - 19
+      distToSegment(x, y, c.sh.restX, c.sh.restY, c.el.restX, c.el.restY) - S.upperArmRadius,
+      distToSegment(x, y, c.el.restX, c.el.restY, c.wr.restX, c.wr.restY) - S.forearmRadius,
+      distToSegment(x, y, c.wr.restX, c.wr.restY, c.tipX, c.tipY) - S.handRadius
     );
     const legDist = (s, x, y) => Math.min(
       distToSegment(x, y, j['hip' + s].restX, j['hip' + s].restY, j['knee' + s].restX, j['knee' + s].restY),
@@ -534,11 +676,10 @@ export class KnightSkeletalRig {
     );
 
     const neckY = j.neck.restY;
-    // The chibi thighs are hidden under the chainmail skirt, which stays with the pelvis;
-    // only the greaves and boots below it are moved by the leg bones.
-    const legTopY = j.hipL.restY + (sharedLegs ? 22 : 16);
-    const clothTopY = j.tabardRoot.restY - 4;
+    const legTopY = j.hipL.restY + (sharedLegs ? S.legTopSide : S.legTopFront);
+    const clothTopY = j.tabardRoot.restY - 4 * u;
     const centerX = j.pelvis.restX;
+    const handGuard = 13 * u;
 
     const labels = new Uint8Array(w * h);
     for (let y = 0; y < h; y++) {
@@ -546,25 +687,24 @@ export class KnightSkeletalRig {
         const idx = y * w + x;
         const p = idx * 4;
         if (src[p + 3] < 40) continue;
-        const r = src[p], g = src[p + 1], b = src[p + 2];
 
         const dL = armDist(capL, x, y);
         const dR = farArmVisible ? armDist(capR, x, y) : Infinity;
         const nearHand = Math.min(
           Math.hypot(x - capL.wr.restX, y - capL.wr.restY),
           farArmVisible ? Math.hypot(x - capR.wr.restX, y - capR.wr.restY) : Infinity
-        ) < 13;
-        const isRed = r > g + 22 && r > b + 12;
+        ) < handGuard;
+        const isCloth = y > clothTopY && !nearHand && this._isClothColor(src[p], src[p + 1], src[p + 2]);
 
         let label, legDistL, legDistR;
-        if (isRed && y > clothTopY && !nearHand) {
-          const forward = (x - centerX) * sinY + 30 * cosY;
+        if (isCloth) {
+          const forward = (x - centerX) * sinY + 30 * u * cosY;
           label = forward > 0 ? LBL.CLOTH_F : LBL.CLOTH_B;
         } else if (dL < 0 || dR < 0) {
           label = dL <= dR ? LBL.ARM_L : LBL.ARM_R;
         } else if (y < neckY) {
           label = LBL.HEAD;
-        } else if (y >= legTopY && Math.min(legDistL = legDist('L', x, y), legDistR = legDist('R', x, y)) < 30) {
+        } else if (y >= legTopY && Math.min(legDistL = legDist('L', x, y), legDistR = legDist('R', x, y)) < S.legRadius) {
           // (skirt / cape fringe hanging further from the legs stays with the body)
           label = sharedLegs ? LBL.LEGS : (legDistL <= legDistR ? LBL.LEG_L : LBL.LEG_R);
         } else {
@@ -574,9 +714,10 @@ export class KnightSkeletalRig {
       }
     }
 
-    // Small islands of body pixels cut off by a limb (e.g. the edge of a gauntlet just outside
+    // Small islands of body pixels cut off by a limb (e.g. the edge of a glove just outside
     // the arm capsule) would stay frozen while the limb moves away; give them to the limb they touch.
     const isBodyLabel = (l) => l === LBL.TORSO || l === LBL.HEAD;
+    const islandSize = 300 * u * u;
     const seen = new Uint8Array(w * h);
     const stack = new Int32Array(w * h);
     for (let start = 0; start < w * h; start++) {
@@ -601,7 +742,7 @@ export class KnightSkeletalRig {
           }
         }
       }
-      if (comp.length >= 300) continue;
+      if (comp.length >= islandSize) continue;
       let owner = 0;
       for (let l = 1; l < 16; l++) if (touching[l] > touching[owner]) owner = l;
       if (owner) for (const idx of comp) labels[idx] = owner;
@@ -611,13 +752,14 @@ export class KnightSkeletalRig {
     // in front / 3/4 views the arms hang beside the body and only background is behind them)
     const fill = new Uint8ClampedArray(src);
     const isBody = (l) => l === LBL.TORSO || l === LBL.HEAD || l === LBL.CLOTH_B || l === LBL.CLOTH_F;
+    const fillScan = Math.ceil(60 * u);
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
         const idx = y * w + x;
         const l = labels[idx];
         if (sideWeight < 0.72 || (l !== LBL.ARM_L && l !== LBL.ARM_R)) continue;
         let left = -1, right = -1;
-        for (let k = 1; k <= 60 && (left < 0 || right < 0); k++) {
+        for (let k = 1; k <= fillScan && (left < 0 || right < 0); k++) {
           if (left < 0 && x - k >= 0 && isBody(labels[idx - k])) left = k;
           if (right < 0 && x + k < w && isBody(labels[idx + k])) right = k;
         }
@@ -652,8 +794,9 @@ export class KnightSkeletalRig {
       }
     }
 
-    frame._rigSeg = { key, labels, fill, spans, sharedLegs, farArmVisible, sinY, cosY, sideWeight };
-    return frame._rigSeg;
+    const seg = { key, labels, fill, spans, sharedLegs, farArmVisible, sinY, cosY, sideWeight };
+    this._segCache.set(frame, seg);
+    return seg;
   }
 
   /**
@@ -668,7 +811,7 @@ export class KnightSkeletalRig {
     // frames from a small LRU cache (jumps and attacks are always rendered fresh)
     let cacheKey = null;
     if (jumpZ <= 1 && attackTimer <= 0 && walkIntensity > 0.01) {
-      const steps = KnightSkeletalRig.POSES_PER_CYCLE;
+      const steps = SkeletalRig.POSES_PER_CYCLE;
       const phaseStep = ((Math.round((walkPhase / (Math.PI * 2)) * steps) % steps) + steps) % steps;
       walkPhase = (phaseStep / steps) * Math.PI * 2;
       walkIntensity = Math.round(walkIntensity * 10) / 10;
@@ -685,32 +828,34 @@ export class KnightSkeletalRig {
     const cache = this._poseCache || (this._poseCache = new Map());
     if (cacheKey && cache.has(cacheKey)) {
       const hit = cache.get(cacheKey);
-      cache.delete(cacheKey);
-      cache.set(cacheKey, hit);
-      return hit;
+      if (hit.frame === frame) {
+        cache.delete(cacheKey);
+        cache.set(cacheKey, hit);
+        return hit.out;
+      }
     }
     const out = this._skinFrame(frame, j, lookupDeg);
     if (cacheKey) {
-      cache.set(cacheKey, out);
-      if (cache.size > KnightSkeletalRig.POSE_CACHE_SIZE) cache.delete(cache.keys().next().value);
+      cache.set(cacheKey, { frame, out });
+      if (cache.size > SkeletalRig.POSE_CACHE_SIZE) cache.delete(cache.keys().next().value);
     }
     return out;
   }
 
   _skinFrame(frame, j, lookupDeg) {
-
-    const seg = this._getFrameSegmentation(frame, lookupDeg);
+    const seg = this.getFrameSegmentation(frame, lookupDeg);
     const w = frame.width;
     const h = frame.height;
     const src = frame.imageData.data;
     const out = new ImageData(w, h);
     const dst = out.data;
     const labels = seg.labels;
+    const u = this.unit;
 
-    // segFrom: rest segment used to decide which bone owns a pixel (the boot spans heel -> toe)
+    // segFrom: rest segment used to decide which bone owns a pixel (the foot spans heel -> toe)
     const bone = (a, b, maxRot, radius = 5, segFrom = a) => ({
       tf: this._buildInverseBoneTransform(j[a], j[b], maxRot),
-      radius,
+      radius: radius * u,
       s0x: j[segFrom].restX, s0y: j[segFrom].restY,
       s1x: j[b].restX, s1y: j[b].restY
     });
@@ -753,7 +898,7 @@ export class KnightSkeletalRig {
       for (const name of chainJoints[chainName]) {
         reach = Math.max(reach, Math.abs(j[name].dx), Math.abs(j[name].dy));
       }
-      reach = Math.ceil(reach + 10);
+      reach = Math.ceil(reach + 10 * u);
 
       const acceptMask = new Uint8Array(16);
       for (const l of accept) acceptMask[l] = 1;
@@ -828,16 +973,19 @@ export class KnightSkeletalRig {
 
   /**
    * Draws a Spine2D-style Bone & Joint Skeleton Overlay on the main canvas.
+   * The sprite is assumed drawn centered on centerX with 75% of its height above centerY.
    */
   drawDebugSkeleton(ctx, centerX, centerY, scale, flipX = false) {
     const j = this.joints2D;
     if (!j || !j.pelvis) return;
+    const fw = this.profile.frameWidth;
+    const fh = this.profile.frameHeight;
 
     const toWorld = (pt) => {
-      const localX = flipX ? (220 - pt.x) : pt.x;
+      const localX = flipX ? (fw - pt.x) : pt.x;
       return {
-        x: (centerX - 110 * scale) + localX * scale,
-        y: (centerY - 335 * 0.75 * scale) + pt.y * scale
+        x: (centerX - fw * 0.5 * scale) + localX * scale,
+        y: (centerY - fh * 0.75 * scale) + pt.y * scale
       };
     };
 
@@ -897,5 +1045,12 @@ export class KnightSkeletalRig {
       ctx.stroke();
     }
     ctx.restore();
+  }
+}
+
+/** The included knight character (kept for backwards compatibility). */
+export class KnightSkeletalRig extends SkeletalRig {
+  constructor() {
+    super(KNIGHT_PROFILE);
   }
 }
