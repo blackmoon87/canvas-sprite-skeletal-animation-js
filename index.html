@@ -1,0 +1,1171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>JS.3D.MESH — Canvas Pixel Engine & 360° Game Object Studio</title>
+  <style>
+    :root {
+      --bg-dark: #0b0f19;
+      --panel-bg: rgba(17, 24, 39, 0.88);
+      --border: rgba(148, 163, 184, 0.18);
+      --accent: #ef4444;
+      --accent-cyan: #38bdf8;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+    }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+    }
+    body {
+      background: radial-gradient(circle at 50% 25%, #1e293b 0%, #090d16 100%);
+      color: var(--text-main);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, monospace;
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 20px;
+      background: var(--panel-bg);
+      border-bottom: 1px solid var(--border);
+      backdrop-filter: blur(12px);
+      z-index: 10;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .brand-badge {
+      background: linear-gradient(135deg, #ef4444, #991b1b);
+      color: #fff;
+      font-weight: 800;
+      font-size: 12px;
+      padding: 4px 9px;
+      border-radius: 6px;
+      letter-spacing: 0.8px;
+    }
+    .brand h1 {
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: 0.3px;
+    }
+    .mode-tabs {
+      display: flex;
+      gap: 8px;
+    }
+    .tab-btn {
+      background: rgba(30, 41, 59, 0.75);
+      color: var(--text-muted);
+      border: 1px solid var(--border);
+      padding: 7px 14px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.16s ease;
+    }
+    .tab-btn:hover {
+      color: #fff;
+      border-color: rgba(255, 255, 255, 0.3);
+    }
+    .tab-btn.active {
+      background: linear-gradient(135deg, #dc2626, #991b1b);
+      color: #fff;
+      border-color: #f87171;
+      box-shadow: 0 0 16px rgba(239, 68, 68, 0.35);
+    }
+    .workspace {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 1fr 330px;
+      overflow: hidden;
+      position: relative;
+    }
+    .canvas-stage {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+    canvas#mainCanvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+      cursor: crosshair;
+    }
+    .hud-overlay {
+      position: absolute;
+      top: 14px;
+      left: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      pointer-events: none;
+    }
+    .hud-pill {
+      background: rgba(15, 23, 42, 0.82);
+      border: 1px solid var(--border);
+      padding: 8px 13px;
+      border-radius: 8px;
+      font-size: 12px;
+      line-height: 1.5;
+      backdrop-filter: blur(8px);
+      color: #e2e8f0;
+    }
+    .hud-pill strong {
+      color: var(--accent-cyan);
+    }
+    .controls-bar {
+      position: absolute;
+      bottom: 16px;
+      left: 16px;
+      background: rgba(15, 23, 42, 0.86);
+      border: 1px solid var(--border);
+      padding: 9px 14px;
+      border-radius: 9px;
+      font-size: 12px;
+      color: #cbd5e1;
+      display: flex;
+      gap: 16px;
+      backdrop-filter: blur(8px);
+    }
+    .key-tag {
+      background: #1e293b;
+      border: 1px solid #475569;
+      padding: 2px 6px;
+      border-radius: 4px;
+      color: #f8fafc;
+      font-weight: 700;
+      font-size: 11px;
+      margin-right: 4px;
+    }
+    aside.sidebar {
+      background: var(--panel-bg);
+      border-left: 1px solid var(--border);
+      padding: 16px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .card {
+      background: rgba(15, 23, 42, 0.65);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 13px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .card h2 {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.9px;
+      color: var(--accent-cyan);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .control-row {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    .control-row label {
+      display: flex;
+      justify-content: space-between;
+      color: #e2e8f0;
+      font-weight: 500;
+    }
+    input[type="range"] {
+      width: 100%;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+    select, button.action-btn {
+      background: #1e293b;
+      color: #f8fafc;
+      border: 1px solid #334155;
+      padding: 8px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button.action-btn:hover {
+      background: #334155;
+      border-color: #64748b;
+    }
+    button.action-btn.primary {
+      background: linear-gradient(135deg, #2563eb, #1d4ed8);
+      border-color: #60a5fa;
+    }
+    button.action-btn.danger {
+      background: linear-gradient(135deg, #dc2626, #b91c1c);
+      border-color: #f87171;
+    }
+    .checkbox-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: #e2e8f0;
+      cursor: pointer;
+    }
+    .loupe-wrap {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    canvas#loupeCanvas {
+      width: 96px;
+      height: 96px;
+      border-radius: 8px;
+      border: 1px solid #475569;
+      background: repeating-conic-gradient(#1e293b 0% 25%, #0f172a 0% 50%) 50% / 12px 12px;
+      image-rendering: pixelated;
+    }
+    .pixel-stats {
+      font-size: 11.5px;
+      line-height: 1.55;
+      color: #cbd5e1;
+      font-family: monospace;
+    }
+    .swatch {
+      display: inline-block;
+      width: 12px;
+      height: 12px;
+      border-radius: 3px;
+      vertical-align: middle;
+      margin-right: 5px;
+      border: 1px solid rgba(255,255,255,0.4);
+    }
+    pre.code-snippet {
+      background: #090d16;
+      border: 1px solid #1e293b;
+      border-radius: 6px;
+      padding: 9px;
+      font-size: 10.5px;
+      line-height: 1.45;
+      color: #93c5fd;
+      overflow-x: auto;
+      user-select: text;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span class="brand-badge">JS.3D.MESH</span>
+      <h1>Canvas Pixel Buffer &amp; 360° Moving Game Object Engine</h1>
+    </div>
+    <div class="mode-tabs">
+      <button class="tab-btn active" data-mode="game">🎮 1. Playable Game Object</button>
+      <button class="tab-btn" data-mode="particles">💥 2. Pixel Particles &amp; Shatter</button>
+      <button class="tab-btn" data-mode="voxel">🧊 3. 3D Voxel Point-Cloud</button>
+      <button class="tab-btn" data-mode="inspector">🔬 4. Raw ImageData Inspector</button>
+    </div>
+  </header>
+
+  <div class="workspace">
+    <div class="canvas-stage">
+      <canvas id="mainCanvas"></canvas>
+
+      <div class="hud-overlay">
+        <div class="hud-pill" id="hudStatus">
+          <strong>Status:</strong> Loading 36-Angle Pixel Buffers...
+        </div>
+        <div class="hud-pill" id="hudMetrics">
+          <strong>Angle:</strong> <span id="valAngle">0°</span> |
+          <strong>Frame:</strong> <span id="valFrame">0/36</span> |
+          <strong>Score:</strong> <span id="valScore">0</span> |
+          <strong>FPS:</strong> <span id="valFps">60</span>
+        </div>
+      </div>
+
+      <div class="controls-bar" id="controlsHint">
+        <span><span class="key-tag">WASD / Arrows</span>Move 360°</span>
+        <span><span class="key-tag">Click</span>Move / Slash</span>
+        <span><span class="key-tag">Space</span>Jump / Shatter</span>
+        <span><span class="key-tag">Shift</span>Pixel Dash</span>
+        <span><span class="key-tag">E</span>360° Spin Attack</span>
+      </div>
+    </div>
+
+    <aside class="sidebar">
+      <!-- Card 1: Pixel Buffer Shader & Manipulation -->
+      <div class="card">
+        <h2>
+          <span>🎨 Pixel Buffer Shader (`ImageData`)</span>
+        </h2>
+        <div class="control-row">
+          <label for="shaderSelect">Active Pixel Filter</label>
+          <select id="shaderSelect">
+            <option value="normal">Clean De-dithered RGBA (Default)</option>
+            <option value="pixelate">8-Bit Retro Pixelate (Block Grid)</option>
+            <option value="edge_neon">Sobel Neon Edge Detector</option>
+            <option value="thermal">Thermal / Infrared Heatmap</option>
+            <option value="hologram">Cyber Hologram + Glitch Scanlines</option>
+            <option value="hit_flash">Combat Hit-Flash Tint</option>
+          </select>
+        </div>
+
+        <div class="control-row">
+          <label>
+            <span>Pixel / Particle Step Size</span>
+            <span id="lblPixelSize">4 px</span>
+          </label>
+          <input type="range" id="rngPixelSize" min="2" max="14" value="4" />
+        </div>
+
+        <div class="control-row">
+          <label>
+            <span>Sprite Scale</span>
+            <span id="lblScale">0.62x</span>
+          </label>
+          <input type="range" id="rngScale" min="0.30" max="1.25" step="0.02" value="0.62" />
+        </div>
+
+        <div class="control-row">
+          <label>
+            <span>Manual 360° Rotation</span>
+            <span id="lblRot">0°</span>
+          </label>
+          <input type="range" id="rngRot" min="0" max="359" value="0" />
+        </div>
+      </div>
+
+      <!-- Card 2: Game Object & Physics Controls -->
+      <div class="card">
+        <h2><span>🦴 19-Joint Rig &amp; Physics</span></h2>
+        <label class="checkbox-row">
+          <input type="checkbox" id="chkSkeleton" checked />
+          <span>Show 19-Joint Bone Skeleton Overlay</span>
+        </label>
+        <label class="checkbox-row">
+          <input type="checkbox" id="chkDemoWalk" />
+          <span>Walk-in-Place Demo (Inspect Foot Stride)</span>
+        </label>
+        <label class="checkbox-row">
+          <input type="checkbox" id="chkHitbox" />
+          <span>Show Pixel-Perfect Alpha Hitbox Grid</span>
+        </label>
+        <label class="checkbox-row">
+          <input type="checkbox" id="chkMouseAim" />
+          <span>Face Mouse Cursor (360° Turret Aim)</span>
+        </label>
+        <label class="checkbox-row">
+          <input type="checkbox" id="chkAutoSpin" />
+          <span>Auto-Rotate 360° Turnaround</span>
+        </label>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 4px;">
+          <button class="action-btn danger" id="btnShatter">💥 Explode Pixels</button>
+          <button class="action-btn primary" id="btnDecodeGif">⚡ Live Decode img.gif</button>
+        </div>
+      </div>
+
+      <!-- Card 3: Real-Time Pixel Loupe Inspector -->
+      <div class="card">
+        <h2><span>🔍 12× Pixel Buffer Loupe</span></h2>
+        <div class="loupe-wrap">
+          <canvas id="loupeCanvas" width="96" height="96"></canvas>
+          <div class="pixel-stats" id="pixelStats">
+            <div>Coord: <strong>(110, 165)</strong></div>
+            <div>RGBA: <strong>[142, 138, 129, 255]</strong></div>
+            <div>Hex: <span class="swatch" id="pixelSwatch" style="background:#8e8a81"></span><strong id="pixelHex">#8E8A81</strong></div>
+            <div>Collision: <strong id="pixelHit" style="color:#4ade80">SOLID PIXEL</strong></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 4: Copy-Paste Game Usage Snippet -->
+      <div class="card">
+        <h2><span>📦 Drop-In JS Game Usage</span></h2>
+        <pre class="code-snippet">import { PixelKnight } from './pixel_knight.js';
+
+const player = new PixelKnight({ x: 400, y: 300 });
+await player.loadFromSpriteSheet();
+
+function gameLoop(dt) {
+  player.update(dt, { right: keys.KeyD, up: keys.KeyW });
+  player.draw(ctx, { showSkeleton: true });
+  if (player.hitTestPixel(bullet.x, bullet.y)) {
+    player.hitFlashTimer = 0.25; // Pixel-accurate hit!
+  }
+}</pre>
+      </div>
+    </aside>
+  </div>
+
+  <script type="module">
+    import { PixelKnight, CanvasPixelProcessor } from './pixel_knight.js';
+
+    const canvas = document.getElementById('mainCanvas');
+    const ctx = canvas.getContext('2d');
+    const loupeCanvas = document.getElementById('loupeCanvas');
+    const loupeCtx = loupeCanvas.getContext('2d');
+
+    // UI Elements
+    const hudStatus = document.getElementById('hudStatus');
+    const valAngle = document.getElementById('valAngle');
+    const valFrame = document.getElementById('valFrame');
+    const valScore = document.getElementById('valScore');
+    const valFps = document.getElementById('valFps');
+
+    const shaderSelect = document.getElementById('shaderSelect');
+    const rngPixelSize = document.getElementById('rngPixelSize');
+    const lblPixelSize = document.getElementById('lblPixelSize');
+    const rngScale = document.getElementById('rngScale');
+    const lblScale = document.getElementById('lblScale');
+    const rngRot = document.getElementById('rngRot');
+    const lblRot = document.getElementById('lblRot');
+
+    const chkSkeleton = document.getElementById('chkSkeleton');
+    const chkDemoWalk = document.getElementById('chkDemoWalk');
+    const chkHitbox = document.getElementById('chkHitbox');
+    const chkMouseAim = document.getElementById('chkMouseAim');
+    const chkAutoSpin = document.getElementById('chkAutoSpin');
+    const btnShatter = document.getElementById('btnShatter');
+    const btnDecodeGif = document.getElementById('btnDecodeGif');
+
+    const pixelStats = document.getElementById('pixelStats');
+
+    let currentMode = 'game'; // 'game' | 'particles' | 'voxel' | 'inspector'
+    let shaderMode = 'normal';
+    let pixelBlockSize = 4;
+    let showSkeleton = true;
+    let showHitbox = false;
+    let autoSpin = false;
+    let score = 0;
+
+    // Input state
+    const input = {
+      up: false,
+      down: false,
+      left: false,
+      right: false,
+      mousePos: { x: 450, y: 300 },
+      targetPos: null,
+      mouseDown: false
+    };
+
+    // Instantiate Playable Knight
+    const knight = new PixelKnight({ x: 480, y: 340, scale: 0.62 });
+
+    // Resize canvas smoothly
+    function resizeCanvas() {
+      const rect = canvas.parentElement.getBoundingClientRect();
+      canvas.width = rect.width;
+      canvas.height = rect.height;
+    }
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
+
+    // =========================================================================
+    // MODE 1: GAME ARENA ENTITIES (Collectible Shards, Enemy Orbs, Pixel Debris)
+    // =========================================================================
+    const runes = [];
+    const enemies = [];
+    const explosionPixels = [];
+
+    function spawnRune() {
+      runes.push({
+        x: 90 + Math.random() * (canvas.width - 180),
+        y: 100 + Math.random() * (canvas.height - 180),
+        phase: Math.random() * Math.PI * 2,
+        radius: 13
+      });
+    }
+
+    function spawnEnemy() {
+      const edge = (Math.random() * 4) | 0;
+      let x = 100, y = 100;
+      if (edge === 0) { x = 60; y = Math.random() * canvas.height; }
+      if (edge === 1) { x = canvas.width - 60; y = Math.random() * canvas.height; }
+      if (edge === 2) { x = Math.random() * canvas.width; y = 80; }
+      if (edge === 3) { x = Math.random() * canvas.width; y = canvas.height - 60; }
+      enemies.push({
+        x, y,
+        vx: 0, vy: 0,
+        hp: 1,
+        radius: 20,
+        hue: 190 + Math.random() * 140,
+        pulse: Math.random() * 6
+      });
+    }
+
+    function spawnPixelBurst(x, y, colorRgb, count = 45) {
+      for (let i = 0; i < count; i++) {
+        const ang = Math.random() * Math.PI * 2;
+        const spd = 40 + Math.random() * 240;
+        explosionPixels.push({
+          x, y,
+          vx: Math.cos(ang) * spd,
+          vy: Math.sin(ang) * spd - 40,
+          size: 3 + Math.random() * 5,
+          color: colorRgb || (Math.random() < 0.5 ? '#f87171' : '#38bdf8'),
+          alpha: 1.0
+        });
+      }
+    }
+
+    for (let i = 0; i < 5; i++) spawnRune();
+    for (let i = 0; i < 4; i++) spawnEnemy();
+
+    // =========================================================================
+    // MODE 2: INTERACTIVE PIXEL PARTICLES ENGINE
+    // =========================================================================
+    let particleCloud = [];
+    let lastParticleFrameIdx = -1;
+    let lastParticleStep = -1;
+
+    function syncParticleCloud(forceRebuild = false) {
+      const st = knight.getActiveFrameState();
+      if (!st) return;
+      const step = Math.max(2, Math.min(10, pixelBlockSize));
+      const activeData = knight.getCurrentWalkImageData() || st.frame.imageData;
+
+      if (forceRebuild || particleCloud.length === 0 || lastParticleStep !== step) {
+        const samples = CanvasPixelProcessor.extractPixelCloud(activeData, step, st.flipX);
+        particleCloud = samples.map(s => ({
+          x: canvas.width * 0.5 + s.localX * 1.35,
+          y: canvas.height * 0.5 + s.localY * 1.35,
+          vx: 0,
+          vy: 0,
+          originX: s.localX * 1.35,
+          originY: s.localY * 1.35,
+          r: s.r, g: s.g, b: s.b, a: s.a,
+          color: s.color
+        }));
+        lastParticleFrameIdx = st.frameIndex;
+        lastParticleStep = step;
+      } else if (lastParticleFrameIdx !== st.frameIndex || knight.walkIntensity > 0.01) {
+        const samples = CanvasPixelProcessor.extractPixelCloud(activeData, step, st.flipX);
+        const count = Math.min(particleCloud.length, samples.length);
+        for (let i = 0; i < count; i++) {
+          const p = particleCloud[i];
+          const s = samples[i];
+          p.originX = s.localX * 1.35;
+          p.originY = s.localY * 1.35;
+          p.r = s.r; p.g = s.g; p.b = s.b;
+          p.color = s.color;
+        }
+        lastParticleFrameIdx = st.frameIndex;
+      }
+    }
+
+    function explodeParticleCloud() {
+      if (currentMode === 'game') {
+        knight.attack();
+        const st = knight.getActiveFrameState();
+        if (st) {
+          const samples = CanvasPixelProcessor.extractPixelCloud(st.frame.imageData, 8, st.flipX);
+          for (const s of samples) {
+            const ang = Math.atan2(s.localY, s.localX) + (Math.random() - 0.5) * 0.6;
+            const spd = 80 + Math.random() * 260;
+            explosionPixels.push({
+              x: knight.x + s.localX * knight.scale,
+              y: knight.y - knight.z + s.localY * knight.scale - 40,
+              vx: Math.cos(ang) * spd,
+              vy: Math.sin(ang) * spd,
+              size: 4,
+              color: s.color,
+              alpha: 1.0
+            });
+          }
+        }
+        return;
+      }
+
+      syncParticleCloud();
+      for (const p of particleCloud) {
+        const ang = Math.random() * Math.PI * 2;
+        const spd = 180 + Math.random() * 520;
+        p.vx += Math.cos(ang) * spd;
+        p.vy += Math.sin(ang) * spd;
+      }
+    }
+
+    // =========================================================================
+    // MODE 3: 3D VOXEL / POINT-CLOUD MESH STATE
+    // =========================================================================
+    let voxelYaw = 0.35;
+    let voxelPitch = -0.15;
+    let isDraggingVoxel = false;
+    let dragStart = { x: 0, y: 0 };
+
+    // =========================================================================
+    // INITIALIZATION
+    // =========================================================================
+    knight.loadFromSpriteSheet('./knight_spritesheet.png', './knight_atlas.json').then(() => {
+      hudStatus.innerHTML = `<strong>Ready:</strong> 36 Angles Loaded • Pixel-Rigged Foot Walking Engine Active`;
+      syncParticleCloud(true);
+    });
+
+    // =========================================================================
+    // EVENT LISTENERS
+    // =========================================================================
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        currentMode = btn.dataset.mode;
+        if (currentMode === 'particles') {
+          syncParticleCloud(true);
+          hudStatus.innerHTML = `<strong>Particle Physics Mode:</strong> Move mouse to repel pixels • Click or Space to Shatter!`;
+        } else if (currentMode === 'voxel') {
+          hudStatus.innerHTML = `<strong>3D Voxel Point-Cloud Mesh:</strong> Drag mouse to orbit 3D extruded pixels!`;
+        } else if (currentMode === 'inspector') {
+          hudStatus.innerHTML = `<strong>Raw ImageData Inspector:</strong> Hover over knight pixels to inspect Uint8ClampedArray [R,G,B,A]`;
+        } else {
+          hudStatus.innerHTML = `<strong>2.5D Game Arena:</strong> WASD/Arrows or Click to Move • Space=Jump • Shift=Dash • E=Spin Slash`;
+        }
+      });
+    });
+
+    shaderSelect.addEventListener('change', e => {
+      shaderMode = e.target.value;
+    });
+
+    rngPixelSize.addEventListener('input', e => {
+      pixelBlockSize = parseInt(e.target.value, 10);
+      lblPixelSize.textContent = `${pixelBlockSize} px`;
+      if (currentMode === 'particles') syncParticleCloud(true);
+    });
+
+    rngScale.addEventListener('input', e => {
+      knight.scale = parseFloat(e.target.value);
+      lblScale.textContent = `${knight.scale.toFixed(2)}x`;
+    });
+
+    rngRot.addEventListener('input', e => {
+      knight.facingDeg = parseFloat(e.target.value);
+      lblRot.textContent = `${Math.round(knight.facingDeg)}°`;
+    });
+
+    chkSkeleton.addEventListener('change', e => { showSkeleton = e.target.checked; });
+    chkDemoWalk.addEventListener('change', e => { knight.demoWalk = e.target.checked; });
+    chkHitbox.addEventListener('change', e => { showHitbox = e.target.checked; });
+    chkMouseAim.addEventListener('change', e => { knight.aimWithMouse = e.target.checked; });
+    chkAutoSpin.addEventListener('change', e => { autoSpin = e.target.checked; });
+
+    btnShatter.addEventListener('click', explodeParticleCloud);
+
+    btnDecodeGif.addEventListener('click', async () => {
+      btnDecodeGif.disabled = true;
+      btnDecodeGif.textContent = '⏳ Decoding img.gif...';
+      hudStatus.innerHTML = `<strong>WebCodecs ImageDecoder:</strong> Decoding &amp; de-dithering raw frames from <code>img.gif</code>...`;
+      try {
+        const frames = await CanvasPixelProcessor.decodeGifToPixelFrames('./img.gif', 36);
+        if (frames.length > 0) {
+          knight.frames = frames;
+          syncParticleCloud(true);
+          hudStatus.innerHTML = `<strong>Live GIF Decoded:</strong> ${frames.length} raw frames extracted &amp; background-keyed in browser!`;
+        }
+      } catch (err) {
+        hudStatus.innerHTML = `<strong>Info:</strong> Using pre-extracted sprite sheet (${err.message})`;
+      } finally {
+        btnDecodeGif.disabled = false;
+        btnDecodeGif.textContent = '⚡ Live Decode img.gif';
+      }
+    });
+
+    window.addEventListener('keydown', e => {
+      if (e.code === 'KeyW' || e.code === 'ArrowUp') input.up = true;
+      if (e.code === 'KeyS' || e.code === 'ArrowDown') input.down = true;
+      if (e.code === 'KeyA' || e.code === 'ArrowLeft') input.left = true;
+      if (e.code === 'KeyD' || e.code === 'ArrowRight') input.right = true;
+      if (e.code === 'Space') {
+        e.preventDefault();
+        if (currentMode === 'game') knight.jump();
+        else explodeParticleCloud();
+      }
+      if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') {
+        const dx = (input.right ? 1 : 0) - (input.left ? 1 : 0) || Math.sin((knight.facingDeg * Math.PI) / 180);
+        const dy = (input.down ? 1 : 0) - (input.up ? 1 : 0) || Math.cos((knight.facingDeg * Math.PI) / 180);
+        knight.dash(dx, dy);
+      }
+      if (e.code === 'KeyE') {
+        triggerSpinSlash();
+      }
+    });
+
+    window.addEventListener('keyup', e => {
+      if (e.code === 'KeyW' || e.code === 'ArrowUp') input.up = false;
+      if (e.code === 'KeyS' || e.code === 'ArrowDown') input.down = false;
+      if (e.code === 'KeyA' || e.code === 'ArrowLeft') input.left = false;
+      if (e.code === 'KeyD' || e.code === 'ArrowRight') input.right = false;
+    });
+
+    function triggerSpinSlash() {
+      knight.attack();
+      for (let i = enemies.length - 1; i >= 0; i--) {
+        const en = enemies[i];
+        if (Math.hypot(en.x - knight.x, en.y - knight.y) < 155) {
+          spawnPixelBurst(en.x, en.y, `hsl(${en.hue}, 85%, 60%)`, 55);
+          enemies.splice(i, 1);
+          score += 25;
+          setTimeout(spawnEnemy, 900);
+        }
+      }
+    }
+
+    canvas.addEventListener('mousemove', e => {
+      const rect = canvas.getBoundingClientRect();
+      input.mousePos = {
+        x: e.clientX - rect.left,
+        y: e.clientY - rect.top
+      };
+      if (currentMode === 'voxel' && isDraggingVoxel) {
+        voxelYaw += (input.mousePos.x - dragStart.x) * 0.01;
+        voxelPitch = Math.max(-1.2, Math.min(1.2, voxelPitch + (input.mousePos.y - dragStart.y) * 0.01));
+        dragStart = { ...input.mousePos };
+      }
+      updatePixelLoupe(input.mousePos.x, input.mousePos.y);
+    });
+
+    canvas.addEventListener('mousedown', e => {
+      input.mouseDown = true;
+      const rect = canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+
+      if (currentMode === 'game') {
+        let hitEnemy = false;
+        for (const en of enemies) {
+          if (Math.hypot(mx - en.x, my - en.y) < 50) {
+            hitEnemy = true;
+            break;
+          }
+        }
+        if (hitEnemy || Math.hypot(mx - knight.x, my - knight.y) < 70) {
+          triggerSpinSlash();
+        } else {
+          input.targetPos = { x: mx, y: my };
+        }
+      } else if (currentMode === 'particles') {
+        explodeParticleCloud();
+      } else if (currentMode === 'voxel') {
+        isDraggingVoxel = true;
+        dragStart = { x: mx, y: my };
+      }
+    });
+
+    window.addEventListener('mouseup', () => {
+      input.mouseDown = false;
+      isDraggingVoxel = false;
+    });
+
+    // =========================================================================
+    // 12x PIXEL LOUPE INSPECTOR
+    // =========================================================================
+    function updatePixelLoupe(mx, my) {
+      const st = knight.getActiveFrameState();
+      if (!st) return;
+      const { frame, flipX } = st;
+      const activeImageData = knight.activeDeformedData || frame.imageData;
+
+      const drawScale = currentMode === 'inspector' ? 1.35 : knight.scale;
+      const centerX = currentMode === 'game' ? knight.x : canvas.width * 0.5;
+      const centerY = currentMode === 'game' ? (knight.y - knight.z) : canvas.height * 0.55;
+      const drawW = frame.width * drawScale;
+      const drawH = frame.height * drawScale;
+      const topLeftX = centerX - drawW * 0.5;
+      const topLeftY = centerY - drawH * 0.75;
+
+      let localX = Math.floor((mx - topLeftX) / drawScale);
+      let localY = Math.floor((my - topLeftY) / drawScale);
+
+      if (localX < 0 || localX >= frame.width || localY < 0 || localY >= frame.height) {
+        return;
+      }
+
+      const sampleX = flipX ? (frame.width - 1 - localX) : localX;
+      const data = activeImageData.data;
+      const idx = (localY * frame.width + sampleX) * 4;
+      const r = data[idx], g = data[idx + 1], b = data[idx + 2], a = data[idx + 3];
+      const hex = '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('').toUpperCase();
+
+      loupeCtx.clearRect(0, 0, 96, 96);
+      const radius = 4;
+      const cell = 12;
+      for (let dy = -radius; dy < radius; dy++) {
+        for (let dx = -radius; dx < radius; dx++) {
+          const px = sampleX + dx;
+          const py = localY + dy;
+          if (px >= 0 && px < frame.width && py >= 0 && py < frame.height) {
+            const pIdx = (py * frame.width + px) * 4;
+            const pr = data[pIdx], pg = data[pIdx + 1], pb = data[pIdx + 2], pa = data[pIdx + 3];
+            if (pa > 0) {
+              loupeCtx.fillStyle = `rgba(${pr},${pg},${pb},${(pa / 255).toFixed(2)})`;
+              loupeCtx.fillRect((dx + radius) * cell, (dy + radius) * cell, cell, cell);
+            }
+          }
+        }
+      }
+      loupeCtx.strokeStyle = '#38bdf8';
+      loupeCtx.lineWidth = 2;
+      loupeCtx.strokeRect(radius * cell, radius * cell, cell, cell);
+
+      const hitText = a > 45
+        ? '<strong style="color:#4ade80">SOLID PIXEL (HIT)</strong>'
+        : '<strong style="color:#94a3b8">TRANSPARENT (MISS)</strong>';
+
+      pixelStats.innerHTML = `
+        <div>Coord: <strong>(${localX}, ${localY})</strong></div>
+        <div>RGBA: <strong>[${r}, ${g}, ${b}, ${a}]</strong></div>
+        <div>Hex: <span class="swatch" style="background:${hex}"></span><strong>${hex}</strong></div>
+        <div>Alpha Test: ${hitText}</div>
+      `;
+    }
+
+    // =========================================================================
+    // RENDERERS FOR EACH MODE
+    // =========================================================================
+    function drawArenaGrid() {
+      const w = canvas.width;
+      const h = canvas.height;
+      ctx.save();
+      ctx.strokeStyle = 'rgba(148, 163, 184, 0.07)';
+      ctx.lineWidth = 1;
+      const grid = 48;
+      for (let x = 0; x < w; x += grid) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, h);
+        ctx.stroke();
+      }
+      for (let y = 0; y < h; y += grid) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(w, y);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    function updateAndDrawGameMode(dt, time) {
+      drawArenaGrid();
+
+      if (autoSpin) {
+        knight.facingDeg = (knight.facingDeg + dt * 65) % 360;
+      }
+
+      knight.update(dt, input, { width: canvas.width, height: canvas.height });
+
+      if (input.targetPos) {
+        ctx.save();
+        ctx.strokeStyle = 'rgba(56, 189, 248, 0.65)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(input.targetPos.x, input.targetPos.y, 12 + Math.sin(time * 10) * 3, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      for (let i = runes.length - 1; i >= 0; i--) {
+        const r = runes[i];
+        r.phase += dt * 4;
+        const ry = r.y + Math.sin(r.phase) * 5;
+
+        ctx.save();
+        ctx.translate(r.x, ry);
+        ctx.rotate(r.phase * 0.6);
+        ctx.fillStyle = '#ef4444';
+        ctx.shadowColor = '#ef4444';
+        ctx.shadowBlur = 14;
+        ctx.fillRect(-8, -8, 16, 16);
+        ctx.fillStyle = '#fca5a5';
+        ctx.fillRect(-4, -4, 8, 8);
+        ctx.restore();
+
+        if (Math.hypot(r.x - knight.x, ry - (knight.y - 25)) < 48) {
+          score += 10;
+          spawnPixelBurst(r.x, ry, '#ef4444', 28);
+          runes.splice(i, 1);
+          setTimeout(spawnRune, 600);
+        }
+      }
+
+      for (let i = enemies.length - 1; i >= 0; i--) {
+        const en = enemies[i];
+        en.pulse += dt * 5;
+        const dx = knight.x - en.x;
+        const dy = (knight.y - 25) - en.y;
+        const dist = Math.hypot(dx, dy) || 1;
+        en.vx = (dx / dist) * 68;
+        en.vy = (dy / dist) * 68;
+        en.x += en.vx * dt;
+        en.y += en.vy * dt;
+
+        ctx.save();
+        ctx.translate(en.x, en.y);
+        const rad = en.radius + Math.sin(en.pulse) * 2.5;
+        const g = ctx.createRadialGradient(0, 0, 2, 0, 0, rad);
+        g.addColorStop(0, '#ffffff');
+        g.addColorStop(0.4, `hsl(${en.hue}, 90%, 60%)`);
+        g.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(0, 0, rad, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+
+        if (knight.dashTimer > 0 || knight.attackTimer > 0) {
+          if (dist < 85) {
+            spawnPixelBurst(en.x, en.y, `hsl(${en.hue}, 90%, 60%)`, 50);
+            enemies.splice(i, 1);
+            score += 25;
+            setTimeout(spawnEnemy, 900);
+            continue;
+          }
+        }
+
+        if (knight.hitTestPixel(en.x, en.y)) {
+          knight.hitFlashTimer = 0.25;
+          spawnPixelBurst(en.x, en.y, '#f87171', 35);
+          enemies.splice(i, 1);
+          setTimeout(spawnEnemy, 1000);
+        }
+      }
+
+      knight.draw(ctx, {
+        shaderMode,
+        time,
+        pixelBlockSize,
+        showHitbox,
+        showSkeleton
+      });
+
+      for (let i = explosionPixels.length - 1; i >= 0; i--) {
+        const p = explosionPixels[i];
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+        p.vy += 320 * dt;
+        p.alpha -= dt * 1.35;
+        if (p.alpha <= 0) {
+          explosionPixels.splice(i, 1);
+          continue;
+        }
+        ctx.save();
+        ctx.globalAlpha = Math.max(0, p.alpha);
+        ctx.fillStyle = p.color;
+        ctx.fillRect(p.x - p.size * 0.5, p.y - p.size * 0.5, p.size, p.size);
+        ctx.restore();
+      }
+    }
+
+    function updateAndDrawParticlesMode(dt) {
+      drawArenaGrid();
+      if (autoSpin) {
+        knight.facingDeg = (knight.facingDeg + dt * 55) % 360;
+      }
+      if (knight.demoWalk) {
+        knight.walkPhase = (knight.walkPhase + dt * 9.5) % (Math.PI * 2);
+        knight.walkIntensity = Math.min(1, knight.walkIntensity + dt * 8);
+      } else {
+        knight.walkIntensity = Math.max(0, knight.walkIntensity - dt * 8);
+      }
+      syncParticleCloud(false);
+
+      const cx = canvas.width * 0.5;
+      const cy = canvas.height * 0.52;
+      const mx = input.mousePos.x;
+      const my = input.mousePos.y;
+      const pSize = Math.max(2, pixelBlockSize - 0.5);
+
+      for (let i = 0; i < particleCloud.length; i++) {
+        const p = particleCloud[i];
+        const targetX = cx + p.originX;
+        const targetY = cy + p.originY;
+
+        p.vx += (targetX - p.x) * 7.5 * dt;
+        p.vy += (targetY - p.y) * 7.5 * dt;
+
+        const dx = p.x - mx;
+        const dy = p.y - my;
+        const distSq = dx * dx + dy * dy;
+        const repelRadius = 115;
+        if (distSq < repelRadius * repelRadius && distSq > 1) {
+          const dist = Math.sqrt(distSq);
+          const force = (1 - dist / repelRadius) * 1450 * dt;
+          p.vx += (dx / dist) * force - (dy / dist) * force * 0.35;
+          p.vy += (dy / dist) * force + (dx / dist) * force * 0.35;
+        }
+
+        p.vx *= Math.pow(0.04, dt);
+        p.vy *= Math.pow(0.04, dt);
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+
+        ctx.fillStyle = p.color;
+        ctx.fillRect(p.x - pSize * 0.5, p.y - pSize * 0.5, pSize, pSize);
+      }
+    }
+
+    function updateAndDrawVoxelMode(dt) {
+      drawArenaGrid();
+      if (autoSpin) {
+        voxelYaw += dt * 0.85;
+      }
+      if (knight.demoWalk) {
+        knight.walkPhase = (knight.walkPhase + dt * 9.5) % (Math.PI * 2);
+        knight.walkIntensity = Math.min(1, knight.walkIntensity + dt * 8);
+      } else {
+        knight.walkIntensity = Math.max(0, knight.walkIntensity - dt * 8);
+      }
+      const st = knight.getActiveFrameState();
+      if (!st) return;
+
+      const step = Math.max(3, pixelBlockSize);
+      const walkData = knight.getCurrentWalkImageData() || st.frame.imageData;
+      const voxels = CanvasPixelProcessor.extractPixelCloud(walkData, step, st.flipX);
+
+      const cosY = Math.cos(voxelYaw), sinY = Math.sin(voxelYaw);
+      const cosP = Math.cos(voxelPitch), sinP = Math.sin(voxelPitch);
+      const cx = canvas.width * 0.5;
+      const cy = canvas.height * 0.52;
+      const fov = 520;
+
+      const projected = [];
+      for (let i = 0; i < voxels.length; i++) {
+        const v = voxels[i];
+        const x3d = v.localX * 1.35;
+        const y3d = v.localY * 1.35;
+        const z3d = v.z * 1.1;
+
+        const rx = x3d * cosY + z3d * sinY;
+        const rz1 = -x3d * sinY + z3d * cosY;
+        const ry = y3d * cosP - rz1 * sinP;
+        const rz = y3d * sinP + rz1 * cosP;
+
+        const scaleProj = fov / (fov + rz + 220);
+        projected.push({
+          sx: cx + rx * scaleProj,
+          sy: cy + ry * scaleProj,
+          rz,
+          size: Math.max(2, step * 1.45 * scaleProj),
+          r: v.r, g: v.g, b: v.b
+        });
+      }
+
+      projected.sort((a, b) => b.rz - a.rz);
+
+      for (let i = 0; i < projected.length; i++) {
+        const p = projected[i];
+        const shade = Math.max(0.55, Math.min(1.25, 1 - p.rz / 140));
+        const r = Math.min(255, (p.r * shade) | 0);
+        const g = Math.min(255, (p.g * shade) | 0);
+        const b = Math.min(255, (p.b * shade) | 0);
+        ctx.fillStyle = `rgb(${r},${g},${b})`;
+        ctx.fillRect(p.sx - p.size * 0.5, p.sy - p.size * 0.5, p.size, p.size);
+      }
+    }
+
+    function updateAndDrawInspectorMode(dt, time) {
+      drawArenaGrid();
+      if (autoSpin) {
+        knight.facingDeg = (knight.facingDeg + dt * 50) % 360;
+      }
+      if (knight.demoWalk) {
+        knight.walkPhase = (knight.walkPhase + dt * 9.5) % (Math.PI * 2);
+        knight.walkIntensity = Math.min(1, knight.walkIntensity + dt * 8);
+      } else {
+        knight.walkIntensity = Math.max(0, knight.walkIntensity - dt * 8);
+      }
+      const st = knight.getActiveFrameState();
+      if (!st) return;
+
+      const { frame, flipX } = st;
+      const drawScale = 1.35;
+      const drawW = frame.width * drawScale;
+      const drawH = frame.height * drawScale;
+      const cx = canvas.width * 0.5;
+      const cy = canvas.height * 0.55;
+
+      const walkData = knight.getCurrentWalkImageData() || frame.imageData;
+      knight.activeDeformedData = walkData;
+      const shaded = CanvasPixelProcessor.applyPixelShader(walkData, shaderMode, time, pixelBlockSize);
+      const off = document.createElement('canvas');
+      off.width = frame.width;
+      off.height = frame.height;
+      off.getContext('2d').putImageData(shaded, 0, 0);
+
+      ctx.save();
+      ctx.translate(cx, cy);
+      if (flipX) ctx.scale(-1, 1);
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(off, -drawW * 0.5, -drawH * 0.75, drawW, drawH);
+      ctx.restore();
+
+      ctx.save();
+      ctx.strokeStyle = 'rgba(56, 189, 248, 0.5)';
+      ctx.strokeRect(cx - drawW * 0.5, cy - drawH * 0.75, drawW, drawH);
+      ctx.restore();
+
+      if (showSkeleton) {
+        CanvasPixelProcessor.sharedRig.drawDebugSkeleton(ctx, cx, cy, drawScale, flipX);
+      }
+    }
+
+    // =========================================================================
+    // MAIN 60 FPS LOOP
+    // =========================================================================
+    let lastTime = performance.now();
+    let fpsAccum = 0, fpsFrames = 0;
+
+    function animate(now) {
+      const dt = Math.min(0.05, (now - lastTime) / 1000);
+      lastTime = now;
+      const timeSec = now / 1000;
+
+      fpsAccum += dt;
+      fpsFrames++;
+      if (fpsAccum >= 0.4) {
+        valFps.textContent = Math.round(fpsFrames / fpsAccum);
+        fpsAccum = 0;
+        fpsFrames = 0;
+      }
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      if (knight.ready) {
+        if (currentMode === 'game') updateAndDrawGameMode(dt, timeSec);
+        else if (currentMode === 'particles') updateAndDrawParticlesMode(dt);
+        else if (currentMode === 'voxel') updateAndDrawVoxelMode(dt);
+        else if (currentMode === 'inspector') updateAndDrawInspectorMode(dt, timeSec);
+
+        const st = knight.getActiveFrameState();
+        if (st) {
+          valAngle.textContent = `${Math.round(st.normAngle)}°`;
+          valFrame.textContent = `${st.frameIndex + 1}/36 ${st.flipX ? '(Mirrored)' : ''}`;
+          valScore.textContent = score;
+          if ( document.activeElement !== rngRot ) {
+            rngRot.value = Math.round(st.normAngle);
+            lblRot.textContent = `${Math.round(st.normAngle)}°`;
+          }
+        }
+      }
+
+      requestAnimationFrame(animate);
+    }
+
+    requestAnimationFrame(animate);
+  </script>
+</body>
+</html>
