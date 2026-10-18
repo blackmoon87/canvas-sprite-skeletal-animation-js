@@ -473,14 +473,27 @@ function drawView(view) {
   }
 
   // tool overlays: border being drawn, brush outline
-  if (state.lasso && state.lasso.view === view && state.lasso.pts.length > 1) {
+  if (state.lasso && state.lasso.view === view) {
+    const l = state.lasso;
+    const pts = l.clickMode && state.cursor && state.cursor.view === view
+      ? [...l.pts, [state.cursor.fx, state.cursor.fy]] : l.pts;
     ctx.strokeStyle = state.tool === 'lassoErase' ? '#f87171' : state.tool === 'lassoPaint' ? '#facc15' : '#4ade80';
+    ctx.lineWidth = 2;
     ctx.setLineDash([6, 4]);
     ctx.beginPath();
-    state.lasso.pts.forEach(([x, y], i) => (i ? ctx.lineTo(ox + x * s, oy + y * s) : ctx.moveTo(ox + x * s, oy + y * s)));
+    pts.forEach(([x, y], i) => (i ? ctx.lineTo(ox + x * s, oy + y * s) : ctx.moveTo(ox + x * s, oy + y * s)));
     ctx.closePath();
     ctx.stroke();
     ctx.setLineDash([]);
+    if (l.clickMode) {
+      for (const [x, y] of l.pts) {
+        ctx.fillStyle = ctx.strokeStyle;
+        ctx.fillRect(ox + x * s - 3, oy + y * s - 3, 6, 6);
+      }
+      ctx.beginPath();
+      ctx.arc(ox + l.pts[0][0] * s, oy + l.pts[0][1] * s, 9, 0, Math.PI * 2);
+      ctx.stroke();
+    }
   }
   if (state.cursor && state.cursor.view === view && ['erase', 'restore', 'paint'].includes(state.tool)) {
     ctx.strokeStyle = '#f8fafc';
@@ -643,9 +656,40 @@ function applyWand(frames, fx, fy, seedFrame) {
   }
 }
 
+function finishLasso() {
+  const l = state.lasso;
+  state.lasso = null;
+  if (!l) return;
+  // drop duplicate corners from the clicks of a double-click
+  const pts = l.pts.filter((p, i) => i === 0 || Math.hypot(p[0] - l.pts[i - 1][0], p[1] - l.pts[i - 1][1]) > 0.5);
+  if (pts.length < 3) return setStatus('Border needs at least 3 corners.');
+  snapshot(l.frames);
+  applyLasso(pts, l.frames);
+  commit(l.frames);
+  setStatus(`<strong>Applied</strong> to ${l.frames.length} frame(s). Undo if needed.`);
+}
+
+window.addEventListener('keydown', (e) => {
+  if (!state.lasso) return;
+  if (e.key === 'Enter') { e.preventDefault(); finishLasso(); }
+  if (e.key === 'Escape') { state.lasso = null; setStatus('Border cancelled.'); }
+});
+
+const TOOL_HINTS = {
+  joints: 'Drag a joint dot in View A or B.',
+  lassoKeep: 'Draw a border around the character: drag a loop, or click corner by corner (Enter / double-click closes). Outside is erased.',
+  lassoErase: 'Draw a border around what to erase: drag a loop, or click corner by corner (Enter / double-click closes).',
+  lassoPaint: 'Pick the part above, then draw its border: drag a loop, or click corner by corner (Enter / double-click closes).',
+  erase: 'Paint over pixels to erase them.',
+  restore: 'Paint over erased pixels to bring them back.',
+  wand: 'Click a background color to erase that connected area.',
+  paint: 'Pick the part above, then paint over its pixels.'
+};
 document.querySelectorAll('[data-tool]').forEach((btn) => btn.addEventListener('click', () => {
   state.tool = btn.dataset.tool;
+  state.lasso = null;
   document.querySelectorAll('[data-tool]').forEach((b) => b.classList.toggle('active', b.dataset.tool === state.tool));
+  setStatus(TOOL_HINTS[state.tool] || '');
 }));
 $('rngBrush').addEventListener('input', (e) => { $('lblBrush').textContent = e.target.value; });
 $('rngWand').addEventListener('input', (e) => { $('lblWand').textContent = e.target.value; });
@@ -710,7 +754,15 @@ for (const view of Object.values(views)) {
       return;
     }
     if (state.tool.startsWith('lasso')) {
-      state.lasso = { view, pts: [[pt.fx, pt.fy]], frames: targets };
+      const open = state.lasso && state.lasso.clickMode && state.lasso.view === view;
+      if (open) {
+        // click mode: each click adds a corner; clicking the first corner closes the border
+        const [x0, y0] = state.lasso.pts[0];
+        if (state.lasso.pts.length >= 3 && Math.hypot(pt.fx - x0, pt.fy - y0) < 10 / pt.s) finishLasso();
+        else state.lasso.pts.push([pt.fx, pt.fy]);
+      } else {
+        state.lasso = { view, pts: [[pt.fx, pt.fy]], frames: targets, dragging: true, clickMode: false };
+      }
       return;
     }
     if (state.tool === 'wand') {
@@ -736,22 +788,31 @@ for (const view of Object.values(views)) {
     if (state.brush && state.brush.view === view) {
       brushAt(state.brush.frame, pt.fx, pt.fy);
       commit([state.brush.frame]);
-    } else if (state.lasso && state.lasso.view === view) {
-      state.lasso.pts.push([pt.fx, pt.fy]);
+    } else if (state.lasso && state.lasso.view === view && state.lasso.dragging) {
+      const [lx, ly] = state.lasso.pts[state.lasso.pts.length - 1];
+      if (Math.hypot(pt.fx - lx, pt.fy - ly) > 1.5 / pt.s) state.lasso.pts.push([pt.fx, pt.fy]);
     } else if (state.drag && state.drag.view === view) {
       setJointFromView(view, state.drag.name, pt.fx, pt.fy);
     }
   });
   view.canvas.addEventListener('pointerup', () => {
-    if (state.lasso && state.lasso.pts.length > 2) {
-      snapshot(state.lasso.frames);
-      applyLasso(state.lasso.pts, state.lasso.frames);
-      commit(state.lasso.frames);
-      setStatus(`<strong>Applied</strong> to ${state.lasso.frames.length} frame(s). Undo if needed.`);
+    if (state.lasso && state.lasso.dragging) {
+      state.lasso.dragging = false;
+      if (state.lasso.pts.length > 8) {
+        finishLasso(); // a dragged loop
+      } else if (!state.lasso.clickMode) {
+        // a click: keep the border open and add corners with more clicks
+        state.lasso.pts = [state.lasso.pts[0]];
+        state.lasso.clickMode = true;
+        setStatus('Border: <strong>click</strong> around the part to add corners; click the first corner, ' +
+          '<strong>double-click</strong> or press <strong>Enter</strong> to close; <strong>Esc</strong> cancels.');
+      }
     }
-    state.lasso = null;
     state.brush = null;
     state.drag = null;
+  });
+  view.canvas.addEventListener('dblclick', () => {
+    if (state.lasso && state.lasso.view === view) finishLasso();
   });
   view.canvas.addEventListener('pointerleave', () => { state.cursor = null; });
 }
