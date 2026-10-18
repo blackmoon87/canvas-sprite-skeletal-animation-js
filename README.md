@@ -20,6 +20,27 @@ frames, no dependencies.
 
 The included **knight** (`characters/knight/`) is the reference example of every step.
 
+### Files you need
+
+- **To make a character:** nothing to download. Open the
+  [editor online](https://blackmoon87.github.io/canvas-sprite-skeletal-animation-js/editor.html) and bring
+  only your images. It exports your character folder (`character.json`, sprite sheet, atlas, and a labels
+  image if you fixed parts).
+- **To use it in your game:** copy 4 JavaScript files, your character folder and one HTML page:
+
+```
+your-game/
+├── pixel_knight.js      ← GameCharacter (the one you import)
+├── skeletal_rig.js      ← used by pixel_knight.js
+├── animations.js        ← used by pixel_knight.js
+├── sprite_tools.js      ← used by pixel_knight.js
+├── characters/my-hero/  ← the files exported from the editor
+└── game.html            ← your game (start from examples/basic-game.html)
+```
+
+Not needed in a game: `editor.html`, `editor.js`, `index.html` and the knight's `img.gif`.
+To try it first, copy `characters/knight/` and run `examples/basic-game.html` as it is.
+
 ---
 
 ## 1. What you need: images and angles
