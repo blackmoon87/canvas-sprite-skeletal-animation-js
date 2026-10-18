@@ -927,7 +927,7 @@ export class SkeletalRig {
       for (let i = 0; i < w * h; i++) {
         let l = ov[i];
         if (!l || src[i * 4 + 3] < 40) continue;
-        if (sharedLegs && (l === LBL.LEG_L || l === LBL.LEG_R)) l = LBL.LEGS;
+        // (in side views, legs marked by hand stay separate: L = near leg, R = far leg for 0..180°)
         if (!sharedLegs && l === LBL.LEGS) l = legDist('L', i % w, (i / w) | 0) <= legDist('R', i % w, (i / w) | 0) ? LBL.LEG_L : LBL.LEG_R;
         labels[i] = l;
       }
@@ -1231,22 +1231,26 @@ export class SkeletalRig {
     const inFront = (a) => a.depth > bodyDepth + 4 * u || (a.near && seg.sideWeight > 0.4);
     const front = arms.filter(inFront).sort((a, b) => a.depth - b.depth);
     const behind = arms.filter((a) => !inFront(a)).sort((a, b) => a.depth - b.depth);
-    const nearLegLabel = seg.sharedLegs ? LBL.LEGS : (leftLegNear ? LBL.LEG_L : LBL.LEG_R);
+    const ownLegLabel = leftLegNear ? LBL.LEG_L : LBL.LEG_R;
+    const nearLegLabels = seg.sharedLegs ? [LBL.LEGS, ownLegLabel] : [ownLegLabel];
     const nearLegForward = depthOf([nearLeg === 'legL' ? 'kneeL' : 'kneeR', nearLeg === 'legL' ? 'ankleL' : 'ankleR']) > bodyDepth + 14 * u;
 
     // Back to front
     if (!backView) paint('cape', [LBL.CLOTH_B]);
     for (const a of behind) paint(a.chain, [a.label]);
     if (seg.sharedLegs) {
+      // overlapping legs: the far leg is a darkened copy of the shared pixels, plus any pixels
+      // marked as the far leg (a far foot that is still visible behind the near one)
       paint(farLeg, [LBL.LEGS], { shade: 0.72 });
+      paint(farLeg, [leftLegNear ? LBL.LEG_R : LBL.LEG_L]);
     } else {
       paint(farLeg, [leftLegNear ? LBL.LEG_R : LBL.LEG_L]);
     }
     paint('body', [LBL.TORSO, LBL.HEAD], { useFill: true });
-    if (!nearLegForward) paint(nearLeg, [nearLegLabel]);
+    if (!nearLegForward) paint(nearLeg, nearLegLabels);
     if (backView) paint('cape', [LBL.CLOTH_B]);
     paint('tabard', [LBL.CLOTH_F]);
-    if (nearLegForward) paint(nearLeg, [nearLegLabel]);
+    if (nearLegForward) paint(nearLeg, nearLegLabels);
     for (const a of front) paint(a.chain, [a.label]);
 
     return out;
