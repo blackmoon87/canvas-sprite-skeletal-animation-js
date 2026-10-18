@@ -111,6 +111,23 @@
       font-size: 11px; background: #020617; padding: 8px; border-radius: 6px;
       overflow-x: auto; color: #cbd5e1;
     }
+    .tabs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; position: sticky; top: -12px; z-index: 2;
+      background: var(--panel); padding: 4px 0; }
+    .tab { background: #0f172a; color: var(--muted); border: 1px solid var(--border); border-radius: 7px;
+      padding: 7px 4px; font-size: 12px; font-weight: 700; cursor: pointer; }
+    .tab.active { color: #fff; border-color: var(--cyan); background: #0c4a6e; }
+    .pane { display: none; flex-direction: column; gap: 10px; }
+    .pane.active { display: flex; }
+    .btn.active { border-color: var(--cyan); background: #0c4a6e; }
+    .tools { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+    .clips { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+    .clips .btn { padding: 5px 4px; font-weight: 500; }
+    .dof-group summary { font-size: 12px; cursor: pointer; color: var(--text); padding: 3px 0; }
+    .dof-group label.row { font-size: 11px; }
+    .keybar { position: relative; height: 18px; background: #020617; border-radius: 4px; border: 1px solid var(--border); }
+    .keybar span { position: absolute; top: 2px; width: 6px; height: 12px; margin-left: -3px; border-radius: 2px; background: #f59e0b; }
+    .frame-pick { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 120px; }
+    .frame-pick input { flex: 1; }
   </style>
 </head>
 <body>
@@ -121,6 +138,13 @@
 
   <div class="workspace">
     <aside>
+      <div class="tabs">
+        <button class="tab active" data-pane="paneCharacter">Character</button>
+        <button class="tab" data-pane="paneClean">Clean &amp; Parts</button>
+        <button class="tab" data-pane="paneAnimate">Animate</button>
+      </div>
+
+      <div class="pane active" id="paneCharacter">
       <div class="card">
         <h2>1. Load your character</h2>
         <p class="hint">A biped (2 arms, 2 legs) standing in a neutral pose. Best: a turnaround from front (0°)
@@ -173,7 +197,7 @@
         <h2>3. Joints</h2>
         <p class="hint">Drag the dots. <strong>Front view</strong> sets left/right and height,
           <strong>side view</strong> sets depth (forward/back) and height. The yellow line is the floor
-          (lowest heel / toe).</p>
+          (lowest heel / toe). Views start at front (A) and side (B); their sliders pick any frame.</p>
         <label class="check"><input type="checkbox" id="chkSymmetric" checked /> Mirror left / right edits</label>
         <label class="check"><input type="checkbox" id="chkLabels" checked /> Show body-part colors</label>
         <div class="hint" id="lblJoint">Selected: —</div>
@@ -208,23 +232,113 @@
       <div class="card">
         <h2>7. Export</h2>
         <label class="row">Name <input type="text" id="txtName" value="my-hero" /></label>
-        <button class="btn accent" id="btnExportAll">⬇ Download character (3 files)</button>
+        <button class="btn accent" id="btnExportAll">⬇ Download character (all files)</button>
         <div class="grid2">
           <button class="btn" id="btnExportJson">character.json</button>
           <button class="btn" id="btnExportSheet">sheet + atlas</button>
         </div>
-        <p class="hint">Put the 3 files in one folder (e.g. <code>characters/my-hero/</code>), then:</p>
+        <p class="hint">Put the files in one folder (e.g. <code>characters/my-hero/</code>), then:</p>
         <pre id="codeUsage"></pre>
+      </div>
+      </div>
+
+      <div class="pane" id="paneClean">
+        <div class="card">
+          <h2>Clean the sprite</h2>
+          <p class="hint">Remove leftover background, shadows, watermarks or noise. Work in the front or side view;
+            use each view's frame slider to reach any angle.</p>
+          <div class="tools" id="cleanTools">
+            <button class="btn active" data-tool="joints">✋ Move joints</button>
+            <button class="btn" data-tool="lassoKeep">⭕ Keep inside border</button>
+            <button class="btn" data-tool="lassoErase">✂ Erase inside border</button>
+            <button class="btn" data-tool="erase">🧽 Eraser brush</button>
+            <button class="btn" data-tool="restore">🖌 Restore brush</button>
+            <button class="btn" data-tool="wand">🪄 Magic wand erase</button>
+          </div>
+          <label class="row"><span>Brush size</span><span id="lblBrush">12</span></label>
+          <input type="range" id="rngBrush" min="2" max="60" value="12" />
+          <label class="row"><span>Wand tolerance</span><span id="lblWand">30</span></label>
+          <input type="range" id="rngWand" min="2" max="120" value="30" />
+          <label class="check"><input type="checkbox" id="chkAllFrames" /> Border / wand tools apply to <strong>all frames</strong></label>
+          <button class="btn accent" id="btnCleanEdges">🧹 Remove background left around the edges</button>
+          <p class="hint">Tip for busy photos / video frames: set Background to "none", draw a border around the
+            character with ⭕, then press 🧹. Fix the rest with the wand, eraser and restore brushes.</p>
+          <div class="grid2">
+            <button class="btn" id="btnUndo">↶ Undo</button>
+            <button class="btn" id="btnRemoveSpecks">✨ Remove specks (all)</button>
+          </div>
+        </div>
+        <div class="card">
+          <h2>Body parts</h2>
+          <p class="hint">Fix which pixels move with which bone: pick a part, then paint or draw a border around it.
+            For an arm or leg, the border is its exact outline (everything else goes back to the body).
+            Colors: <span style="color:#8c8cf0">head</span>, <span style="color:#aaa">torso</span>,
+            <span style="color:#c83cdc">arm L</span>, <span style="color:#f050a0">arm R</span>,
+            <span style="color:#28c83c">leg L</span>, <span style="color:#e6d21e">leg R</span>,
+            <span style="color:#f03c28">front cloth</span>, <span style="color:#8c1e14">back cloth</span>.</p>
+          <label class="row">Part
+            <select id="selPart">
+              <option value="2">head</option><option value="1">torso</option>
+              <option value="4">arm L</option><option value="5">arm R</option>
+              <option value="6">leg L</option><option value="7">leg R</option>
+              <option value="9">front cloth (tabard, skirt)</option><option value="10">back cloth (cape, hair)</option>
+              <option value="0">automatic (clear my paint)</option>
+            </select>
+          </label>
+          <div class="tools">
+            <button class="btn" data-tool="paint">🖍 Paint part</button>
+            <button class="btn" data-tool="lassoPaint">⭕ Border → part</button>
+          </div>
+          <label class="check"><input type="checkbox" id="chkPartAll" /> Border → part applies to all frames</label>
+        </div>
+      </div>
+
+      <div class="pane" id="paneAnimate">
+        <div class="card">
+          <h2>Animation library</h2>
+          <p class="hint">Click to play in the preview (over walking if "walk" is on). L / R = the hand / foot on the
+            viewer's left / right in the front view.</p>
+          <div class="clips" id="clipList"></div>
+          <div class="grid2">
+            <button class="btn" id="btnStopClips">■ Stop all</button>
+            <label class="row"><span>Speed</span><input type="range" id="rngClipSpeed" min="0.25" max="2" step="0.05" value="1" style="width:90px" /></label>
+          </div>
+        </div>
+        <div class="card">
+          <h2>Pose &amp; keyframes</h2>
+          <label class="check"><input type="checkbox" id="chkPoseMode" /> <strong>Pose mode</strong>: drag hands, feet, head
+            or hips in the preview, or use the sliders</label>
+          <div id="dofSliders"></div>
+          <button class="btn" id="btnResetPose">Reset pose</button>
+          <label class="row">Clip name <input type="text" id="txtClip" value="my-move" style="width:120px" /></label>
+          <div class="grid2">
+            <label class="row">Length (s) <input type="number" id="numClipLen" value="1.2" min="0.1" step="0.1" style="width:60px" /></label>
+            <label class="check"><input type="checkbox" id="chkClipLoop" checked /> loop</label>
+          </div>
+          <label class="row"><span>Time</span><span id="lblKeyTime">0.00 s</span></label>
+          <input type="range" id="rngKeyTime" min="0" max="1" step="0.01" value="0" />
+          <div class="keybar" id="keyBar"></div>
+          <div class="grid2">
+            <button class="btn accent" id="btnSetKey">◆ Set key here</button>
+            <button class="btn" id="btnDelKey">✕ Delete key</button>
+            <button class="btn primary" id="btnPlayClip">▶ Play my clip</button>
+            <button class="btn" id="btnSaveClip">💾 Save to character</button>
+          </div>
+          <p class="hint">Saved clips are exported in character.json and play in your game with
+            <code>hero.play('my-move')</code>.</p>
+        </div>
       </div>
     </aside>
 
     <main>
       <div class="view">
-        <div class="view-head"><strong>Front view</strong><span id="lblFrontAngle"></span></div>
+        <div class="view-head"><strong>View A</strong>
+          <span class="frame-pick"><input type="range" id="rngFrameA" min="0" max="180" value="0" /><span id="lblFrontAngle"></span></span></div>
         <canvas id="cvFront"></canvas>
       </div>
       <div class="view">
-        <div class="view-head"><strong>Side view</strong><span id="lblSideAngle"></span></div>
+        <div class="view-head"><strong>View B</strong>
+          <span class="frame-pick"><input type="range" id="rngFrameB" min="0" max="180" value="90" /><span id="lblSideAngle"></span></span></div>
         <canvas id="cvSide"></canvas>
       </div>
       <div class="view">

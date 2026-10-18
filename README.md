@@ -23,6 +23,28 @@ animation frames, no dependencies.
 6. Check the **preview** at every angle, or **play test** it with WASD / arrows, Space, E.
 7. **Export**: `character.json` + sprite sheet `.png` + atlas `.json`. Put them in `characters/<name>/`.
 
+### Clean any art: busy photos, video frames, watermarks
+
+The **Clean & Parts** tab handles art that automatic background removal can't:
+
+- **⭕ Keep inside border**: draw around the character; everything outside is erased.
+- **🧹 Remove background left around the edges**: grows from the erased area while colors change smoothly and
+  stops at the character's outline. Border + 🧹 cuts a character out of a busy studio photo.
+- **✂ Erase inside border**, **🧽 eraser**, **🖌 restore** (brings back the original pixels), **🪄 magic wand**,
+  **✨ remove specks**, and undo. Border / wand tools can apply to every frame at once.
+- **Body parts**: pick *arm L / arm R / leg L / leg R / head / torso / front cloth / back cloth* and paint, or draw a
+  border. For a limb, the border is its exact outline. Use this when arms touch the body or sleeves match the shirt.
+  Painted parts are exported as `<name>_labels.png`.
+
+### Animate it
+
+The **Animate** tab plays the built-in moves on your character and lets you make new ones:
+
+- **Pose mode**: drag hands, elbows, feet, knees, head or hips in the preview (inverse kinematics), or use
+  per-joint sliders (shoulder raise / side raise / twist, elbow, hip, knee, ankle, spine, neck, root, planted feet).
+- **Keyframes**: set poses at times, scrub and play, then **save** the clip into the character. It is
+  exported in `character.json` and plays in the game with `hero.play('my-move')`.
+
 Works for bipeds (2 arms, 2 legs) drawn in a neutral standing pose (arms down or slightly out,
 legs straight). Poses like squatting, sitting or arms raised high need manual joint work and won't
 give a natural walk. For the best result use a full turnaround; with one image, every angle uses it.
@@ -77,8 +99,39 @@ function gameLoop(dt) {
 }
 ```
 
-`player.jump()`, `player.attack()`, `player.dash(dx, dy)`, `player.hitTestPixel(x, y)` and
-`player.setProfile(profile)` (swap characters) are available too. `PixelKnight` still works as an alias.
+`player.jump()` (crouch → take-off → tuck → landing), `player.attack()`, `player.dash(dx, dy)`,
+`player.hitTestPixel(x, y)` and `player.setProfile(profile)` (swap characters) are available too.
+Pass `{ run: true }` in the input to run. `PixelKnight` still works as an alias.
+
+### Animations
+
+```js
+player.play('wave-right');          // plays over walking (only the right arm is taken over)
+player.play('sit');                 // holds the last pose until stopped
+player.stop('sit');
+player.play('hip-sway', { speed: 1.5 });
+player.animations;                  // every clip name, including the character's own
+```
+
+Built-in clips: `wave-right`, `wave-left`, `cheer`, `clap`, `point-right`, `dab`, `hands-on-hips`, `think`,
+`hand-to-face`, `bow`, `sit`, `crouch`, `jump`, `kick`, `leg-lift`, `hip-sway`, `step-touch`, `arms-out-groove`,
+`victory`, `flinch`, `look-around`, `slash`. L / R mean the limb on the viewer's left / right in the front view.
+
+A clip is plain JSON (angles in degrees, root offsets as a fraction of leg length, `plantL` / `plantR` keep a
+foot planted while the body moves):
+
+```js
+{
+  "duration": 1.2, "loop": true, "mask": ["armR"],
+  "keys": [
+    { "t": 0,   "pose": { "shoulderAbdR": 125, "shoulderTwistR": 90, "elbowFlexR": 40 } },
+    { "t": 0.3, "pose": { "elbowFlexR": 85 } }
+  ]
+}
+```
+
+Lower level: `rig.renderPose(frame, pose, facingDeg)` skins any pose (see `SkeletalRig.POSE_KEYS`);
+`animations.js` exports `CLIPS`, `sampleClip()` and the layered `Animator`.
 
 Use the rig directly on any sprite frame:
 
@@ -104,11 +157,12 @@ const { canvas, atlas } = buildSpriteSheet(frames);
 | Field | Meaning |
 | --- | --- |
 | `joints` | 24 joints. `x`, `y`: pixels in the front (0°) frame. `z`: forward offset from the pelvis, seen in the side (90°) frame |
-| `segmentation` | arm / hand / leg thickness and where the legs start, in sprite pixels |
+| `segmentation` | arm / hand / leg thickness, where the legs start, `armEdges` (separate arms by color edges) |
 | `cloth` | `mode`: `none`, `colors` (picked colors + `tolerance`) or `dominantRed` |
 | `gait` | stride, knee lift, heel–toe roll, arm swing, lean, hip twist, cape trail, camera tilt |
 | `yawTable` / `armTable` | optional measured corrections for turntables that don't rotate evenly (see the knight) |
-| `sprite` | sprite sheet + atlas file names, relative to the profile |
+| `animations` | the character's own clips (made in the editor's Animate tab) |
+| `sprite` | sprite sheet, atlas and optional labels sheet file names, relative to the profile |
 
 ## Files
 
@@ -116,14 +170,16 @@ const { canvas, atlas } = buildSpriteSheet(frames);
 | --- | --- |
 | `skeletal_rig.js` | Profile-driven skeleton, gait kinematics, forward kinematics + ground contact, frame segmentation, layered skinning |
 | `pixel_knight.js` | `GameCharacter` game object and `CanvasPixelProcessor` (shaders, GIF decoding, point cloud) |
-| `sprite_tools.js` | GIF / PNG loading, background removal, cropping, sprite sheet packing |
+| `animations.js` | Keyframe clips, built-in move library, layered `Animator` |
+| `sprite_tools.js` | GIF / PNG loading, background removal, cropping, sprite sheet + labels sheet packing |
 | `editor.html` / `editor.js` | Visual Character Rig Editor |
 | `index.html` | Demo studio: playable arena, particles, voxel view, ImageData inspector |
 | `characters/knight/` | Example character: `character.json`, 36-angle sprite sheet + atlas, source GIF |
 
 ## Keywords
 
-JavaScript sprite animation, character rigging tool, auto rig, HTML5 canvas game, procedural animation, 2D skeletal animation,
+JavaScript sprite animation, character rigging tool, auto rig, keyframe animation, inverse kinematics editor,
+background removal, HTML5 canvas game, procedural animation, 2D skeletal animation,
 inverse kinematics, walk cycle, pixel manipulation, ImageData, game development, indie game,
 360 degree sprite, no-dependency game engine.
 

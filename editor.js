@@ -9,8 +9,10 @@ import {
 } from './skeletal_rig.js';
 import { GameCharacter, CanvasPixelProcessor } from './pixel_knight.js';
 import {
-  loadImage, decodeGifFrames, loadImageFrames, prepareFrames, framesFromSheet, buildSpriteSheet
+  loadImage, decodeGifFrames, loadImageFrames, prepareFrames, framesFromSheet, buildSpriteSheet,
+  buildLabelSheet, removeSpecks, keySmoothBackground
 } from './sprite_tools.js';
+import { GROUPS, sampleClip } from './animations.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -190,6 +192,8 @@ function autoRig(presetName) {
     profile.segmentation = {};
     for (const [k, v] of Object.entries(preset.segmentation)) profile.segmentation[k] = v * H;
   }
+  // new characters usually have arms touching the body: separate them by color edges
+  profile.segmentation = { ...(profile.segmentation || {}), armEdges: 45 };
   return profile;
 }
 
@@ -218,14 +222,14 @@ function useProfile(profile) {
   $('txtName').value = state.profile.name;
   syncControls();
   rebuild();
+  state.hero.animator.addClips(state.profile.animations);
+  renderClipList();
 }
 
 function useFrames(frames) {
   state.frames = frames;
   state.hero.setFrames(frames);
-  const f = nearestFrame(0), s = nearestFrame(90);
-  $('lblFrontAngle').textContent = f ? `frame at ${Math.round(f.angleDeg)}°` : 'no front frame';
-  $('lblSideAngle').textContent = s ? `frame at ${Math.round(s.angleDeg)}°` : 'no side frame';
+  for (const view of Object.values(views)) view.slider.dispatchEvent(new Event('input'));
 }
 
 function processRaws() {
@@ -249,6 +253,7 @@ function runAutoRig() {
 // Sliders
 // ---------------------------------------------------------------------------
 const SEG_SLIDERS = [
+  ['armEdges', 'Arm edge detection (0 = off)'],
   ['upperArmRadius', 'Upper arm thickness'], ['forearmRadius', 'Forearm thickness'],
   ['handRadius', 'Hand size'], ['handLength', 'Hand length'], ['legRadius', 'Leg thickness'],
   ['legTopFront', 'Legs start below hip (front)'], ['legTopSide', 'Legs start below hip (side)']
@@ -269,6 +274,7 @@ function buildSliders() {
     const value = wrap.querySelectorAll('span')[1];
     input.dataset.group = group;
     input.dataset.key = key;
+    if (key === 'armEdges') { input.max = 150; input.step = 1; }
     input.addEventListener('input', () => {
       if (!state.profile) return;
       state.profile[group][key] = +input.value;
@@ -285,7 +291,7 @@ function syncControls() {
   const p = state.profile;
   const height = Math.max(p.joints.heelL.y, p.joints.toeL.y) - p.joints.headTop.y;
   document.querySelectorAll('input[data-group]').forEach((input) => {
-    if (input.dataset.group === 'segmentation') input.max = Math.ceil(height * 0.3);
+    if (input.dataset.group === 'segmentation' && input.dataset.key !== 'armEdges') input.max = Math.ceil(height * 0.3);
     input.value = p[input.dataset.group][input.dataset.key];
     input.parentElement.querySelectorAll('span')[1].textContent = (+input.value).toFixed(2);
   });
@@ -322,9 +328,17 @@ const BONES = [
   ['pelvis', 'hipR'], ['hipR', 'kneeR'], ['kneeR', 'ankleR'], ['ankleR', 'toeR'], ['ankleR', 'heelR']
 ];
 const views = {
-  front: { canvas: $('cvFront'), angle: 0 },
-  side: { canvas: $('cvSide'), angle: 90 }
+  front: { canvas: $('cvFront'), angle: 0, slider: $('rngFrameA'), label: $('lblFrontAngle') },
+  side: { canvas: $('cvSide'), angle: 90, slider: $('rngFrameB'), label: $('lblSideAngle') }
 };
+const viewFrame = (view) => nearestFrame(view.angle, 180);
+for (const view of Object.values(views)) {
+  view.slider.addEventListener('input', () => {
+    view.angle = +view.slider.value;
+    const f = viewFrame(view);
+    view.label.textContent = f ? `frame ${f.index} · ${Math.round(f.angleDeg)}°` : '';
+  });
+}
 
 function fitCanvas(canvas) {
   const dpr = window.devicePixelRatio || 1;
@@ -371,7 +385,7 @@ function labelCanvas(frame) {
 function drawView(view) {
   const { ctx, w, h } = fitCanvas(view.canvas);
   ctx.clearRect(0, 0, w, h);
-  const frame = nearestFrame(view.angle);
+  const frame = viewFrame(view);
   if (!frame || !state.rig) {
     ctx.fillStyle = '#64748b';
     ctx.font = '13px sans-serif';
@@ -410,10 +424,27 @@ function drawView(view) {
     ctx.fill();
     ctx.stroke();
   }
+
+  // tool overlays: border being drawn, brush outline
+  if (state.lasso && state.lasso.view === view && state.lasso.pts.length > 1) {
+    ctx.strokeStyle = state.tool === 'lassoErase' ? '#f87171' : state.tool === 'lassoPaint' ? '#facc15' : '#4ade80';
+    ctx.setLineDash([6, 4]);
+    ctx.beginPath();
+    state.lasso.pts.forEach(([x, y], i) => (i ? ctx.lineTo(ox + x * s, oy + y * s) : ctx.moveTo(ox + x * s, oy + y * s)));
+    ctx.closePath();
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  if (state.cursor && state.cursor.view === view && ['erase', 'restore', 'paint'].includes(state.tool)) {
+    ctx.strokeStyle = '#f8fafc';
+    ctx.beginPath();
+    ctx.arc(ox + state.cursor.fx * s, oy + state.cursor.fy * s, +$('rngBrush').value * s, 0, Math.PI * 2);
+    ctx.stroke();
+  }
 }
 
 function pointerToFrame(view, e) {
-  const frame = nearestFrame(view.angle);
+  const frame = viewFrame(view);
   if (!frame) return null;
   const rect = view.canvas.getBoundingClientRect();
   const { s, ox, oy } = viewTransform(view, frame);
@@ -422,7 +453,7 @@ function pointerToFrame(view, e) {
 
 function setJointFromView(view, name, fx, fy) {
   const p = state.profile;
-  const frame = nearestFrame(view.angle);
+  const frame = viewFrame(view);
   const yaw = (state.rig.visualYawDeg(frame.angleDeg) * Math.PI) / 180;
   const cos = Math.cos(yaw), sin = Math.sin(yaw);
   const J = p.joints[name];
@@ -450,6 +481,156 @@ function setJointFromView(view, name, fx, fy) {
   scheduleRebuild();
 }
 
+// ---------------------------------------------------------------------------
+// Cleanup & body-part tools
+// ---------------------------------------------------------------------------
+state.tool = 'joints';
+const undoStack = [];
+
+function snapshot(frames) {
+  undoStack.push(frames.map((f) => ({
+    frame: f,
+    data: new Uint8ClampedArray(f.imageData.data),
+    ov: f.labelOverride ? new Uint8Array(f.labelOverride) : null
+  })));
+  if (undoStack.length > 25) undoStack.shift();
+}
+
+function commit(frames) {
+  for (const f of frames) {
+    f.canvas.getContext('2d').putImageData(f.imageData, 0, 0);
+    state.rig?.invalidateFrame(f);
+    state.rig?._labelCanvases?.delete(f);
+  }
+}
+
+function capture(el, e) {
+  try { el.setPointerCapture(e.pointerId); } catch { /* not a capturable pointer */ }
+}
+
+function keepOriginal(f) {
+  // restore brings back the source pixels from before background removal when we have them
+  if (!f._orig) f._orig = f.raw ? new Uint8ClampedArray(f.raw) : new Uint8ClampedArray(f.imageData.data);
+}
+
+function brushAt(frame, fx, fy) {
+  const r = +$('rngBrush').value;
+  const { width: w, height: h } = frame;
+  const d = frame.imageData.data;
+  const part = +$('selPart').value;
+  if (state.tool === 'paint' && !frame.labelOverride) frame.labelOverride = new Uint8Array(w * h);
+  for (let y = Math.max(0, Math.floor(fy - r)); y <= Math.min(h - 1, Math.ceil(fy + r)); y++) {
+    for (let x = Math.max(0, Math.floor(fx - r)); x <= Math.min(w - 1, Math.ceil(fx + r)); x++) {
+      if ((x - fx) ** 2 + (y - fy) ** 2 > r * r) continue;
+      const i = y * w + x;
+      if (state.tool === 'erase') d[i * 4 + 3] = 0;
+      else if (state.tool === 'restore') for (let c = 0; c < 4; c++) d[i * 4 + c] = frame._orig[i * 4 + c];
+      else if (state.tool === 'paint') frame.labelOverride[i] = part;
+    }
+  }
+}
+
+function pointInPolygon(x, y, pts) {
+  let inside = false;
+  for (let i = 0, k = pts.length - 1; i < pts.length; k = i++) {
+    const [xi, yi] = pts[i], [xk, yk] = pts[k];
+    if ((yi > y) !== (yk > y) && x < ((xk - xi) * (y - yi)) / (yk - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+/** Applies a closed border (lasso) to frames: keep inside, erase inside, or assign a body part. */
+function applyLasso(pts, frames) {
+  const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+  const part = +$('selPart').value;
+  const limb = part >= 4 && part <= 7; // arm / leg: the border is that limb's exact outline
+  for (const f of frames) {
+    const { width: w, height: h } = f;
+    const d = f.imageData.data;
+    if (state.tool === 'lassoPaint' && !f.labelOverride) f.labelOverride = new Uint8Array(w * h);
+    const auto = state.tool === 'lassoPaint' && limb ? state.rig.getFrameSegmentation(f, f.angleDeg) : null;
+    const x0 = Math.max(0, Math.floor(Math.min(...xs))), x1 = Math.min(w - 1, Math.ceil(Math.max(...xs)));
+    const y0 = Math.max(0, Math.floor(Math.min(...ys))), y1 = Math.min(h - 1, Math.ceil(Math.max(...ys)));
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const inBox = x >= x0 && x <= x1 && y >= y0 && y <= y1;
+        const inside = inBox && pointInPolygon(x + 0.5, y + 0.5, pts);
+        const i = y * w + x;
+        if (state.tool === 'lassoKeep' && !inside) d[i * 4 + 3] = 0;
+        else if (state.tool === 'lassoErase' && inside) d[i * 4 + 3] = 0;
+        else if (state.tool === 'lassoPaint' && inside && d[i * 4 + 3] > 40) f.labelOverride[i] = part;
+        else if (auto && !inside && f.labelOverride[i] !== part && (auto.labels[i] & 0x7f) === part) {
+          // automatically counted as this limb but outside its outline: give it back to the body
+          f.labelOverride[i] = y < auto.neckY ? 2 : 1;
+        }
+      }
+    }
+  }
+}
+
+/** Magic wand: erases the connected region of similar color around (fx, fy). */
+function applyWand(frames, fx, fy, seedFrame) {
+  const tol = +$('rngWand').value;
+  const sx = Math.round(fx), sy = Math.round(fy);
+  const sd = seedFrame.imageData.data, si = (sy * seedFrame.width + sx) * 4;
+  const seed = [sd[si], sd[si + 1], sd[si + 2]];
+  for (const f of frames) {
+    const { width: w, height: h } = f;
+    if (sx < 0 || sy < 0 || sx >= w || sy >= h) continue;
+    const d = f.imageData.data;
+    const near = (i) => d[i * 4 + 3] > 0 &&
+      Math.abs(d[i * 4] - seed[0]) + Math.abs(d[i * 4 + 1] - seed[1]) + Math.abs(d[i * 4 + 2] - seed[2]) <= tol * 1.7;
+    const start = sy * w + sx;
+    if (!near(start)) continue;
+    const seen = new Uint8Array(w * h);
+    const stack = [start];
+    seen[start] = 1;
+    while (stack.length) {
+      const cur = stack.pop();
+      d[cur * 4 + 3] = 0;
+      const cx = cur % w;
+      for (const nb of [cur - w, cur + w, cx > 0 ? cur - 1 : -1, cx < w - 1 ? cur + 1 : -1]) {
+        if (nb >= 0 && nb < w * h && !seen[nb] && near(nb)) { seen[nb] = 1; stack.push(nb); }
+      }
+    }
+  }
+}
+
+document.querySelectorAll('[data-tool]').forEach((btn) => btn.addEventListener('click', () => {
+  state.tool = btn.dataset.tool;
+  document.querySelectorAll('[data-tool]').forEach((b) => b.classList.toggle('active', b.dataset.tool === state.tool));
+}));
+$('rngBrush').addEventListener('input', (e) => { $('lblBrush').textContent = e.target.value; });
+$('rngWand').addEventListener('input', (e) => { $('lblWand').textContent = e.target.value; });
+$('btnUndo').addEventListener('click', () => {
+  const step = undoStack.pop();
+  if (!step) return setStatus('Nothing to undo.');
+  for (const s of step) {
+    s.frame.imageData.data.set(s.data);
+    s.frame.labelOverride = s.ov;
+  }
+  commit(step.map((s) => s.frame));
+  setStatus('Undone.');
+});
+$('btnCleanEdges').addEventListener('click', () => {
+  const view = views.front;
+  const targets = $('chkAllFrames').checked ? state.frames : [viewFrame(view)].filter(Boolean);
+  snapshot(targets);
+  const tol = +$('rngTol').value;
+  for (const f of targets) {
+    const keyed = keySmoothBackground(f.imageData, { step: tol / 7.6, fromTransparent: true });
+    f.imageData.data.set(removeSpecks(keyed).data);
+  }
+  commit(targets);
+  setStatus(`<strong>Cleaned</strong> ${targets.length} frame(s) (uses the Background tolerance slider). Undo if it ate too much.`);
+});
+$('btnRemoveSpecks').addEventListener('click', () => {
+  snapshot(state.frames);
+  for (const f of state.frames) f.imageData.data.set(removeSpecks(f.imageData).data);
+  commit(state.frames);
+  setStatus('<strong>Specks removed</strong> on every frame.');
+});
+
 for (const view of Object.values(views)) {
   view.canvas.addEventListener('pointerdown', (e) => {
     const pt = pointerToFrame(view, e);
@@ -470,6 +651,27 @@ for (const view of Object.values(views)) {
       $('btnPickCloth').classList.remove('primary');
       return;
     }
+    capture(view.canvas, e);
+    const allFrames = state.tool === 'lassoPaint' ? $('chkPartAll').checked : $('chkAllFrames').checked;
+    const targets = allFrames ? state.frames : [pt.frame];
+    if (state.tool === 'erase' || state.tool === 'restore' || state.tool === 'paint') {
+      keepOriginal(pt.frame);
+      snapshot([pt.frame]);
+      state.brush = { view, frame: pt.frame };
+      brushAt(pt.frame, pt.fx, pt.fy);
+      commit([pt.frame]);
+      return;
+    }
+    if (state.tool.startsWith('lasso')) {
+      state.lasso = { view, pts: [[pt.fx, pt.fy]], frames: targets };
+      return;
+    }
+    if (state.tool === 'wand') {
+      snapshot(targets);
+      applyWand(targets, pt.fx, pt.fy, pt.frame);
+      commit(targets);
+      return;
+    }
     const j = state.rig.restJoints2D(pt.frame.angleDeg);
     let best = null, bestD = 12 / pt.s;
     for (const [n, q] of Object.entries(j)) {
@@ -478,17 +680,33 @@ for (const view of Object.values(views)) {
     }
     state.selected = best;
     $('lblJoint').textContent = `Selected: ${best ?? '—'}`;
-    if (best) {
-      state.drag = { view, name: best };
-      view.canvas.setPointerCapture(e.pointerId);
-    }
+    if (best) state.drag = { view, name: best };
   });
   view.canvas.addEventListener('pointermove', (e) => {
-    if (!state.drag || state.drag.view !== view) return;
     const pt = pointerToFrame(view, e);
-    if (pt) setJointFromView(view, state.drag.name, pt.fx, pt.fy);
+    if (!pt) return;
+    state.cursor = { view, fx: pt.fx, fy: pt.fy };
+    if (state.brush && state.brush.view === view) {
+      brushAt(state.brush.frame, pt.fx, pt.fy);
+      commit([state.brush.frame]);
+    } else if (state.lasso && state.lasso.view === view) {
+      state.lasso.pts.push([pt.fx, pt.fy]);
+    } else if (state.drag && state.drag.view === view) {
+      setJointFromView(view, state.drag.name, pt.fx, pt.fy);
+    }
   });
-  view.canvas.addEventListener('pointerup', () => { state.drag = null; });
+  view.canvas.addEventListener('pointerup', () => {
+    if (state.lasso && state.lasso.pts.length > 2) {
+      snapshot(state.lasso.frames);
+      applyLasso(state.lasso.pts, state.lasso.frames);
+      commit(state.lasso.frames);
+      setStatus(`<strong>Applied</strong> to ${state.lasso.frames.length} frame(s). Undo if needed.`);
+    }
+    state.lasso = null;
+    state.brush = null;
+    state.drag = null;
+  });
+  view.canvas.addEventListener('pointerleave', () => { state.cursor = null; });
 }
 
 // ---------------------------------------------------------------------------
@@ -512,7 +730,7 @@ function drawPreview(dt) {
   if (!state.rig || !state.frames.length) return;
 
   const fh = state.frames[0].height;
-  const fit = (h * 0.8) / fh;
+  const fit = (h * 0.62) / fh;
   const play = $('chkPlay').checked;
   if (play) {
     hero.scale = fit * 0.55;
@@ -521,14 +739,15 @@ function drawPreview(dt) {
   } else {
     hero.scale = fit;
     hero.x = w / 2;
-    hero.y = (h - fh * fit) / 2 + fh * fit * 0.75;
+    hero.y = (h - fh * fit) / 2 + fh * fit * 0.85;
     hero.vx = hero.vy = 0;
     hero.facingDeg = +$('rngFacing').value;
     hero.demoWalk = $('chkWalk').checked;
     hero.update(dt, {}, { width: w * 4, height: h * 4 });
     hero.x = w / 2;
-    hero.y = (h - fh * fit) / 2 + fh * fit * 0.75;
+    hero.y = (h - fh * fit) / 2 + fh * fit * 0.85;
   }
+  hero.poseOverride = $('chkPoseMode').checked ? poseFromDeg(state.poseDeg) : null;
 
   ctx.strokeStyle = 'rgba(148, 163, 184, 0.25)';
   ctx.beginPath();
@@ -614,9 +833,10 @@ $('fileSingle').addEventListener('change', (e) => guard('Loading image', async (
 }));
 
 $('fileSheet').addEventListener('change', (e) => guard('Loading sprite sheet', async () => {
-  let atlas = null, profile = null, sheet = null;
+  let atlas = null, profile = null, sheet = null, labels = null;
   for (const f of e.target.files) {
-    if (f.type.startsWith('image/')) sheet = f;
+    if (f.type.startsWith('image/') && /labels/i.test(f.name)) labels = f;
+    else if (f.type.startsWith('image/')) sheet = f;
     else {
       const json = JSON.parse(await f.text());
       if (json.joints) profile = json;
@@ -625,7 +845,8 @@ $('fileSheet').addEventListener('change', (e) => guard('Loading sprite sheet', a
   }
   if (!sheet || !atlas) throw new Error('select the sheet image and its atlas .json (character.json optional)');
   state.raws = null;
-  useFrames(framesFromSheet(await loadImage(URL.createObjectURL(sheet)), atlas));
+  useFrames(framesFromSheet(await loadImage(URL.createObjectURL(sheet)), atlas,
+    labels ? await loadImage(URL.createObjectURL(labels)) : null));
   if (profile) {
     useProfile(profile);
     setStatus(`<strong>Loaded ${profile.name}</strong> with its profile.`);
@@ -691,7 +912,11 @@ function exportProfileText() {
     name,
     frameWidth: state.frames[0].width,
     frameHeight: state.frames[0].height,
-    sprite: { sheet: `${name}_spritesheet.png`, atlas: `${name}_atlas.json` }
+    sprite: {
+      sheet: `${name}_spritesheet.png`,
+      atlas: `${name}_atlas.json`,
+      ...(state.frames.some((f) => f.labelOverride) ? { labels: `${name}_labels.png` } : {})
+    }
   };
   return serializeProfile(p);
 }
@@ -703,6 +928,11 @@ async function exportSheet() {
   download(`${name}_spritesheet.png`, blob);
   await new Promise((r) => setTimeout(r, 300));
   download(`${name}_atlas.json`, new Blob([JSON.stringify(atlas, null, 2)], { type: 'application/json' }));
+  const labels = buildLabelSheet(state.frames, atlas);
+  if (labels) {
+    await new Promise((r) => setTimeout(r, 300));
+    download(`${name}_labels.png`, await new Promise((r) => labels.toBlob(r, 'image/png')));
+  }
 }
 
 function ready() {
@@ -723,7 +953,7 @@ $('btnExportAll').addEventListener('click', () => guard('Exporting', async () =>
   download('character.json', new Blob([exportProfileText()], { type: 'application/json' }));
   await new Promise((r) => setTimeout(r, 300));
   await exportSheet();
-  setStatus(`<strong>Saved 3 files.</strong> Put them in <code>characters/${slug()}/</code>.`);
+  setStatus(`<strong>Saved.</strong> Put the files in <code>characters/${slug()}/</code>.`);
 }));
 
 function updateUsage() {
@@ -739,7 +969,245 @@ hero.draw(ctx);`;
 }
 $('txtName').addEventListener('input', updateUsage);
 
+// ---------------------------------------------------------------------------
+// Tabs
+// ---------------------------------------------------------------------------
+document.querySelectorAll('.tab').forEach((tab) => tab.addEventListener('click', () => {
+  document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t === tab));
+  document.querySelectorAll('.pane').forEach((p) => p.classList.toggle('active', p.id === tab.dataset.pane));
+}));
+
+// ---------------------------------------------------------------------------
+// Animate: library, pose editor (sliders + drag IK), keyframes
+// ---------------------------------------------------------------------------
+const LINEAR_DOF = new Set(['rootX', 'rootY', 'rootZ', 'lift', 'plantL', 'plantR']);
+const DOF_RANGE = (k) => {
+  if (k.startsWith('plant')) return [0, 1, 0.05];
+  if (k === 'lift') return [0, 1, 0.01];
+  if (LINEAR_DOF.has(k)) return [-0.6, 0.6, 0.01];
+  if (k.startsWith('elbowFlex') || k.startsWith('kneeFlex')) return [0, 160, 1];
+  if (k.startsWith('shoulderFlex') || k.startsWith('shoulderAbd')) return [-60, 180, 1];
+  if (k.startsWith('hipFlex')) return [-60, 130, 1];
+  if (k.startsWith('hipAbd')) return [-30, 90, 1];
+  return [-120, 120, 1];
+};
+const DOF_GROUPS = { ...GROUPS, root: [...GROUPS.root] };
+const ALL_DOFS = Object.values(DOF_GROUPS).flat();
+state.poseDeg = {};
+
+function poseFromDeg(deg) {
+  const pose = { ground: 1 };
+  for (const [k, v] of Object.entries(deg)) pose[k] = LINEAR_DOF.has(k) ? v : (v * Math.PI) / 180;
+  return pose;
+}
+function degFromPose(pose) {
+  const deg = {};
+  for (const [k, v] of Object.entries(pose)) {
+    if (k === 'ground') continue;
+    deg[k] = LINEAR_DOF.has(k) ? v : (v * 180) / Math.PI;
+  }
+  return deg;
+}
+
+function buildDofSliders() {
+  const box = $('dofSliders');
+  for (const [group, keys] of Object.entries(DOF_GROUPS)) {
+    const det = document.createElement('details');
+    det.className = 'dof-group';
+    det.innerHTML = `<summary>${group}</summary>`;
+    for (const k of keys) {
+      const [min, max, step] = DOF_RANGE(k);
+      const row = document.createElement('div');
+      row.innerHTML = `<label class="row"><span>${k}</span><span></span></label><input type="range" min="${min}" max="${max}" step="${step}" value="0" data-dof="${k}" />`;
+      det.appendChild(row);
+    }
+    box.appendChild(det);
+  }
+  box.addEventListener('input', (e) => {
+    const k = e.target.dataset.dof;
+    if (!k) return;
+    state.poseDeg[k] = +e.target.value;
+    syncDofSliders();
+  });
+}
+function syncDofSliders() {
+  document.querySelectorAll('input[data-dof]').forEach((input) => {
+    const v = state.poseDeg[input.dataset.dof] || 0;
+    input.value = v;
+    input.parentElement.querySelectorAll('span')[1].textContent = LINEAR_DOF.has(input.dataset.dof) ? v.toFixed(2) : `${Math.round(v)}°`;
+  });
+}
+
+function renderClipList() {
+  const box = $('clipList');
+  box.innerHTML = '';
+  for (const name of state.hero.animations) {
+    const b = document.createElement('button');
+    b.className = 'btn';
+    b.textContent = name;
+    b.addEventListener('click', () => {
+      $('chkPoseMode').checked = false;
+      state.hero.play(name, { speed: +$('rngClipSpeed').value });
+      setStatus(`Playing <strong>${name}</strong>${state.hero.animator.library[name].loop ? ' (loops)' : ''}.`);
+    });
+    box.appendChild(b);
+  }
+}
+$('btnStopClips').addEventListener('click', () => state.hero.stop());
+$('btnResetPose').addEventListener('click', () => { state.poseDeg = {}; syncDofSliders(); });
+
+// Drag hands / feet / head / hips in the preview: numeric IK on the limb's angles
+const IK_DOFS = {
+  wristL: ['shoulderFlexL', 'shoulderAbdL', 'elbowFlexL'], wristR: ['shoulderFlexR', 'shoulderAbdR', 'elbowFlexR'],
+  elbowL: ['shoulderFlexL', 'shoulderAbdL'], elbowR: ['shoulderFlexR', 'shoulderAbdR'],
+  ankleL: ['hipFlexL', 'hipAbdL', 'kneeFlexL'], ankleR: ['hipFlexR', 'hipAbdR', 'kneeFlexR'],
+  kneeL: ['hipFlexL', 'hipAbdL'], kneeR: ['hipFlexR', 'hipAbdR'],
+  headTop: ['neckPitch', 'neckRoll', 'spinePitch', 'spineRoll'],
+  pelvis: ['rootX', 'rootY']
+};
+
+function previewToFrame(e) {
+  const hero = state.hero;
+  const st = hero.getActiveFrameState();
+  if (!st) return null;
+  const rect = $('cvPreview').getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  let fx = (mx - hero.x) / hero.scale + st.frame.width / 2;
+  const fy = (my - (hero.y - hero.z)) / hero.scale + st.frame.height * 0.75;
+  if (st.flipX) fx = st.frame.width - fx;
+  return { st, fx, fy };
+}
+
+function solveIK(joint, fx, fy, st) {
+  const dofs = IK_DOFS[joint];
+  const rig = state.rig;
+  const err = () => {
+    const j = rig.computeProjectedJoints(st.normAngle, st.frame.angleDeg, poseFromDeg(state.poseDeg));
+    return (j[joint].x - fx) ** 2 + (j[joint].y - fy) ** 2;
+  };
+  if (joint.startsWith('ankle') || joint.startsWith('knee')) state.poseDeg['plant' + joint.slice(-1)] = 0;
+  if (joint === 'pelvis') { state.poseDeg.plantL = 1; state.poseDeg.plantR = 1; }
+  let e0 = err();
+  for (const start of [16, 6, 2, 0.6]) {
+    for (let pass = 0; pass < 6; pass++) {
+      let improved = false;
+      for (const k of dofs) {
+        const [min, max] = DOF_RANGE(k);
+        const step = LINEAR_DOF.has(k) ? start / 120 : start;
+        for (const dir of [1, -1]) {
+          const old = state.poseDeg[k] || 0;
+          state.poseDeg[k] = Math.max(min, Math.min(max, old + dir * step));
+          const e1 = err();
+          if (e1 < e0) { e0 = e1; improved = true; break; }
+          state.poseDeg[k] = old;
+        }
+      }
+      if (!improved) break;
+    }
+  }
+  syncDofSliders();
+}
+
+$('cvPreview').addEventListener('pointerdown', (e) => {
+  if (!$('chkPoseMode').checked || !state.rig) return;
+  const pt = previewToFrame(e);
+  if (!pt) return;
+  const j = state.rig.joints2D;
+  let best = null, bestD = 14 / state.hero.scale;
+  for (const n of Object.keys(IK_DOFS)) {
+    const d = Math.hypot(j[n].x - pt.fx, j[n].y - pt.fy);
+    if (d < bestD) { bestD = d; best = n; }
+  }
+  if (!best) return;
+  state.ikDrag = best;
+  capture($('cvPreview'), e);
+  setStatus(`Dragging <strong>${best}</strong>`);
+});
+$('cvPreview').addEventListener('pointermove', (e) => {
+  if (!state.ikDrag) return;
+  const pt = previewToFrame(e);
+  if (pt) solveIK(state.ikDrag, pt.fx, pt.fy, pt.st);
+});
+$('cvPreview').addEventListener('pointerup', () => { state.ikDrag = null; });
+$('chkPoseMode').addEventListener('change', (e) => {
+  if (e.target.checked) {
+    $('chkSkel').checked = true;
+    $('chkWalk').checked = false;
+    state.hero.stop();
+    setStatus('<strong>Pose mode:</strong> drag the hands, feet, elbows, knees, head top or hips in the preview.');
+  }
+});
+
+// Keyframes (stored in degrees, like the built-in clips)
+state.clip = { duration: 1.2, loop: true, keys: [] };
+const keyTime = () => +$('rngKeyTime').value;
+function renderKeyBar() {
+  const bar = $('keyBar');
+  bar.innerHTML = '';
+  for (const k of state.clip.keys) {
+    const m = document.createElement('span');
+    m.style.left = `${(k.t / state.clip.duration) * 100}%`;
+    bar.appendChild(m);
+  }
+  $('lblKeyTime').textContent = `${keyTime().toFixed(2)} s · ${state.clip.keys.length} key(s)`;
+}
+function syncClipSettings() {
+  state.clip.duration = Math.max(0.1, +$('numClipLen').value);
+  state.clip.loop = $('chkClipLoop').checked;
+  $('rngKeyTime').max = state.clip.duration;
+  renderKeyBar();
+}
+$('numClipLen').addEventListener('input', syncClipSettings);
+$('chkClipLoop').addEventListener('change', syncClipSettings);
+$('rngKeyTime').addEventListener('input', () => {
+  if (state.clip.keys.length) {
+    delete state.clip._tracks;
+    state.poseDeg = degFromPose(sampleClip(state.clip, keyTime(), false));
+    syncDofSliders();
+  }
+  renderKeyBar();
+});
+$('btnSetKey').addEventListener('click', () => {
+  const t = Math.round(keyTime() * 100) / 100;
+  const pose = {};
+  for (const k of ALL_DOFS) pose[k] = Math.round((state.poseDeg[k] || 0) * 100) / 100;
+  state.clip.keys = state.clip.keys.filter((k) => Math.abs(k.t - t) > 0.02);
+  state.clip.keys.push({ t, pose });
+  state.clip.keys.sort((a, b) => a.t - b.t);
+  delete state.clip._tracks;
+  renderKeyBar();
+  setStatus(`Key set at <strong>${t.toFixed(2)} s</strong>. Move the time slider, change the pose, set another key.`);
+});
+$('btnDelKey').addEventListener('click', () => {
+  const t = keyTime();
+  state.clip.keys = state.clip.keys.filter((k) => Math.abs(k.t - t) > 0.03);
+  delete state.clip._tracks;
+  renderKeyBar();
+});
+function currentClip() {
+  syncClipSettings();
+  if (!state.clip.keys.length) throw new Error('set at least one key first');
+  return JSON.parse(JSON.stringify({ duration: state.clip.duration, loop: state.clip.loop, keys: state.clip.keys }));
+}
+$('btnPlayClip').addEventListener('click', () => guard('Playing', async () => {
+  const clip = currentClip();
+  $('chkPoseMode').checked = false;
+  state.hero.animator.addClips({ [$('txtClip').value]: clip });
+  state.hero.play($('txtClip').value, { speed: +$('rngClipSpeed').value });
+  setStatus(`Playing <strong>${$('txtClip').value}</strong>.`);
+}));
+$('btnSaveClip').addEventListener('click', () => guard('Saving', async () => {
+  const name = $('txtClip').value.trim() || 'my-move';
+  const clip = currentClip();
+  state.profile.animations[name] = clip;
+  state.hero.animator.addClips({ [name]: clip });
+  renderClipList();
+  setStatus(`<strong>Saved "${name}"</strong> to this character. Export character.json to keep it.`);
+}));
+
 buildSliders();
+buildDofSliders();
+syncClipSettings();
 updateUsage();
 requestAnimationFrame(frameLoop);
 $('btnKnight').click();

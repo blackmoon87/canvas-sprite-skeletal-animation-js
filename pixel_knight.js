@@ -19,6 +19,7 @@
 
 import { SkeletalRig, KnightSkeletalRig } from './skeletal_rig.js';
 import { loadImage, framesFromSheet } from './sprite_tools.js';
+import { Animator } from './animations.js';
 
 export class CanvasPixelProcessor {
   static sharedRig = new KnightSkeletalRig();
@@ -422,6 +423,13 @@ export class GameCharacter {
     this.hitFlashTimer = 0;
     this.afterImages = [];
     this.dustParticles = [];
+    this.time = 0;
+    this.runAmount = 0;     // 0 = walk .. 1 = run
+    this.jumpState = null;  // 'crouch' | 'air' | 'land'
+    this.jumpTimer = 0;
+    this.poseOverride = null; // a fixed pose (pose editors), replaces movement + animations
+    this.animator = new Animator();
+    this.animator.addClips(this.rig.profile.animations);
 
     // Loaded frame buffers (e.g. 36 frames covering 0°..180°)
     this.frames = [];
@@ -444,7 +452,8 @@ export class GameCharacter {
     if (profile.sprite) {
       await character.loadFromSpriteSheet(
         new URL(profile.sprite.sheet, baseUrl).href,
-        new URL(profile.sprite.atlas, baseUrl).href
+        new URL(profile.sprite.atlas, baseUrl).href,
+        profile.sprite.labels ? new URL(profile.sprite.labels, baseUrl).href : null
       );
     }
     return character;
@@ -453,6 +462,7 @@ export class GameCharacter {
   /** Swaps in another character profile (keeps position and state). */
   setProfile(profile) {
     this.rig = new SkeletalRig(profile);
+    this.animator.addClips(this.rig.profile.animations);
   }
 
   /** Uses already-prepared frames (e.g. from sprite_tools.prepareFrames). */
@@ -471,12 +481,13 @@ export class GameCharacter {
    * Loads a sprite sheet + atlas & slices each frame into its own Canvas + ImageData
    * pixel buffer for instant pixel access.
    */
-  async loadFromSpriteSheet(sheetUrl = './characters/knight/knight_spritesheet.png', atlasUrl = './characters/knight/knight_atlas.json') {
-    const [atlas, img] = await Promise.all([
+  async loadFromSpriteSheet(sheetUrl = './characters/knight/knight_spritesheet.png', atlasUrl = './characters/knight/knight_atlas.json', labelsUrl = null) {
+    const [atlas, img, labels] = await Promise.all([
       fetch(atlasUrl).then(r => r.json()),
-      loadImage(sheetUrl)
+      loadImage(sheetUrl),
+      labelsUrl ? loadImage(labelsUrl) : null
     ]);
-    this.setFrames(framesFromSheet(img, atlas));
+    this.setFrames(framesFromSheet(img, atlas, labels));
     return this.frames;
   }
 
@@ -513,19 +524,75 @@ export class GameCharacter {
   }
 
   /**
-   * Returns the current frame's ImageData after applying real-time 19-joint skeletal kinematics!
+   * The pose the character has right now: idle breathing / walk / run from the rig, jump
+   * crouch-air-land, plus every animation clip playing on top (see play()).
    */
+  currentPose() {
+    if (this.poseOverride) return this.poseOverride;
+    const rig = this.rig;
+    const w = this.walkIntensity;
+    const base = rig.gaitPose(this.walkPhase, w, this.runAmount);
+    const idle = rig.idlePose(this.time, 1 - w);
+    const plant = Math.pow(1 - w, 3);
+    for (const [k, v] of Object.entries(idle)) {
+      if (k === 'ground') continue;
+      base[k] = (base[k] || 0) + v * (k.startsWith('plant') ? plant : 1);
+    }
+
+    // Jump: crouch before take-off, tuck in the air, absorb the landing
+    const mix = (pose, weight) => {
+      if (weight <= 0) return;
+      for (const [k, v] of Object.entries(pose)) {
+        const from = base[k] ?? (k === 'ground' ? 1 : 0);
+        base[k] = from + (v - from) * weight;
+      }
+    };
+    const crouch = {
+      rootY: 0.22, spinePitch: 0.35, plantL: 1, plantR: 1,
+      shoulderFlexL: -0.6, shoulderFlexR: -0.6, elbowFlexL: 0.3, elbowFlexR: 0.3
+    };
+    if (this.jumpState === 'crouch') mix(crouch, Math.min(1, (0.12 - this.jumpTimer) / 0.08));
+    if (this.jumpState === 'land') mix(crouch, Math.min(1, this.jumpTimer / 0.16) * 0.8);
+    if (this.z > 0.5) {
+      const rising = this.vz > 0;
+      mix({
+        ground: 0, plantL: 0, plantR: 0,
+        hipFlexL: rising ? 0.9 : 0.35, hipFlexR: rising ? 0.7 : 0.25,
+        kneeFlexL: rising ? 1.6 : 0.6, kneeFlexR: rising ? 1.3 : 0.5,
+        ankleFlexL: -0.4, ankleFlexR: -0.4,
+        shoulderFlexL: rising ? 2.0 : 0.9, shoulderFlexR: rising ? 2.0 : 0.9,
+        elbowFlexL: 0.25, elbowFlexR: 0.25,
+        spinePitch: rising ? -0.05 : 0.12,
+        tabardPitch: rising ? -0.3 : 0.4, capePitch: rising ? 0.3 : -0.4
+      }, Math.min(1, this.z / 20));
+    }
+    return this.animator.apply(base);
+  }
+
+  /** Current skinned ImageData (padded, see rig.pad). */
   getCurrentWalkImageData() {
     const st = this.getActiveFrameState();
     if (!st) return null;
-    return this.rig.renderRiggedFrame(
-      st.frame,
-      this.walkPhase,
-      this.walkIntensity,
-      st.normAngle,
-      this.z,
-      this.attackTimer
-    );
+    return this.rig.renderPose(st.frame, this.currentPose(), st.normAngle);
+  }
+
+  /**
+   * Plays an animation clip over the current movement, e.g. 'wave-right', 'jump', 'sit', 'dance'.
+   * See animations.js CLIPS for the built-in list; profiles can add their own ("animations").
+   * @param opts { speed, fade, loop, hold, onEnd }
+   */
+  play(name, opts = {}) {
+    this.animator.play(name, opts);
+  }
+
+  /** Stops one clip (or all clips when no name is given). */
+  stop(name, fade) {
+    this.animator.stop(name, fade);
+  }
+
+  /** Names of all animation clips this character can play. */
+  get animations() {
+    return Object.keys(this.animator.library);
   }
 
   dash(dirX, dirY) {
@@ -538,9 +605,11 @@ export class GameCharacter {
     return true;
   }
 
+  /** Jumps with a short crouch first (take-off happens after 0.12 s). */
   jump() {
-    if (this.z <= 0.5) {
-      this.vz = 430;
+    if (this.z <= 0.5 && this.jumpState !== 'crouch') {
+      this.jumpState = 'crouch';
+      this.jumpTimer = 0.12;
       return true;
     }
     return false;
@@ -549,6 +618,7 @@ export class GameCharacter {
   attack() {
     if (this.attackTimer <= 0) {
       this.attackTimer = 0.42;
+      this.play('slash', { fade: 0.05 });
       return true;
     }
     return false;
@@ -558,6 +628,19 @@ export class GameCharacter {
    * Updates physics, 360° rotational facing, biomechanical leg-stride phase, and footstep dust.
    */
   update(dt, input = {}, bounds = { width: 960, height: 600 }) {
+    this.time += dt;
+    this.animator.update(dt);
+    if (this.jumpState === 'crouch') {
+      this.jumpTimer -= dt;
+      if (this.jumpTimer <= 0) {
+        this.jumpState = 'air';
+        this.vz = 430;
+        this.z = Math.max(this.z, 0.6);
+      }
+    } else if (this.jumpState === 'land') {
+      this.jumpTimer -= dt;
+      if (this.jumpTimer <= 0) this.jumpState = null;
+    }
     if (this.dashCooldown > 0) this.dashCooldown = Math.max(0, this.dashCooldown - dt);
     if (this.hitFlashTimer > 0) this.hitFlashTimer = Math.max(0, this.hitFlashTimer - dt);
 
@@ -624,6 +707,10 @@ export class GameCharacter {
       if (this.z <= 0) {
         this.z = 0;
         this.vz = 0;
+        if (this.jumpState === 'air') {
+          this.jumpState = 'land';
+          this.jumpTimer = 0.16;
+        }
       }
     }
 
@@ -644,13 +731,16 @@ export class GameCharacter {
     // Biomechanical walk-cycle progression & foot-strike dust synchronization
     const speedMag = Math.hypot(this.vx, this.vy);
     const shouldWalk = (speedMag > 15 || this.demoWalk) && this.z === 0;
+    // Run when moving clearly faster than walking speed (e.g. input.run or a dash)
+    const runTarget = input.run || this.dashTimer > 0 || speedMag > this.speed * 1.25 ? 1 : 0;
+    this.runAmount += (runTarget - this.runAmount) * Math.min(1, dt * 6);
 
     if (shouldWalk) {
       const effectiveSpeed = speedMag > 15 ? speedMag : this.speed * 0.82;
       this.walkIntensity = Math.min(1.0, this.walkIntensity + dt * 9.0);
       // Advance the gait so one cycle covers exactly two strides on screen: the planted foot
       // stays put on the ground instead of skating
-      const cycleLength = this.rig.strideCycleLength(this.walkIntensity) * this.scale;
+      const cycleLength = this.rig.strideCycleLength(this.walkIntensity, this.runAmount) * this.scale;
       this.walkPhase = (this.walkPhase + dt * effectiveSpeed * (Math.PI * 2) / cycleLength) % (Math.PI * 2);
 
       // Emit dust puff at heel strike (left heel strikes at phase π/2, right heel at 3π/2)
@@ -699,23 +789,16 @@ export class GameCharacter {
     const st = this.getActiveFrameState();
     if (!st) return false;
     const { frame, flipX } = st;
-    const drawW = frame.width * this.scale;
-    const drawH = frame.height * this.scale;
-
-    const topLeftX = this.x - drawW * 0.5;
-    const topLeftY = (this.y - this.z) - drawH * 0.75;
-
-    if (wx < topLeftX || wx >= topLeftX + drawW || wy < topLeftY || wy >= topLeftY + drawH) {
-      return false;
-    }
+    const img = this.activeDeformedData || this.rig.paddedFrame(frame);
+    const pad = img.pad || 0;
+    const topLeftX = this.x - (frame.width * 0.5 + pad) * this.scale;
+    const topLeftY = (this.y - this.z) - (frame.height * 0.75 + pad) * this.scale;
 
     let localX = Math.floor((wx - topLeftX) / this.scale);
     const localY = Math.floor((wy - topLeftY) / this.scale);
-    if (flipX) localX = frame.width - 1 - localX;
-
-    const activeData = this.activeDeformedData || frame.imageData;
-    const idx = (localY * frame.width + localX) * 4;
-    return activeData.data[idx + 3] > 45;
+    if (localX < 0 || localY < 0 || localX >= img.width || localY >= img.height) return false;
+    if (flipX) localX = img.width - 1 - localX;
+    return img.data[(localY * img.width + localX) * 4 + 3] > 45;
   }
 
   /**
@@ -771,16 +854,14 @@ export class GameCharacter {
       ctx.restore();
     }
 
-    // 4. Solve 19-Joint Skeletal Rig & Skin Pixel Buffer
-    const walkImageData = this.rig.renderRiggedFrame(
-      frame,
-      this.walkPhase,
-      this.walkIntensity,
-      normAngle,
-      this.z,
-      this.attackTimer
-    );
+    // 4. Solve the skeletal rig for the current pose & skin the pixel buffer (padded canvas)
+    const walkImageData = this.rig.renderPose(frame, this.currentPose(), normAngle);
     this.activeDeformedData = walkImageData;
+    const pad = walkImageData.pad || 0;
+    const imgW = walkImageData.width * this.scale;
+    const imgH = walkImageData.height * this.scale;
+    const imgX = -(frame.width * 0.5 + pad) * this.scale;
+    const imgY = -(frame.height * 0.75 + pad) * this.scale;
 
     const effectiveShader = this.hitFlashTimer > 0 ? 'hit_flash' : shaderMode;
     const finalImageData = CanvasPixelProcessor.applyPixelShader(
@@ -793,9 +874,9 @@ export class GameCharacter {
     if (!this._renderCanvas) {
       this._renderCanvas = document.createElement('canvas');
     }
-    if (this._renderCanvas.width !== frame.width || this._renderCanvas.height !== frame.height) {
-      this._renderCanvas.width = frame.width;
-      this._renderCanvas.height = frame.height;
+    if (this._renderCanvas.width !== walkImageData.width || this._renderCanvas.height !== walkImageData.height) {
+      this._renderCanvas.width = walkImageData.width;
+      this._renderCanvas.height = walkImageData.height;
     }
     this._renderCanvas.getContext('2d').putImageData(finalImageData, 0, 0);
 
@@ -803,7 +884,7 @@ export class GameCharacter {
     ctx.translate(this.x, this.y - this.z);
     if (flipX) ctx.scale(-1, 1);
     ctx.imageSmoothingEnabled = effectiveShader !== 'pixelate';
-    ctx.drawImage(this._renderCanvas, -drawW * 0.5, -drawH * 0.75, drawW, drawH);
+    ctx.drawImage(this._renderCanvas, imgX, imgY, imgW, imgH);
     ctx.restore();
 
     // 5. Spin-attack shockwave ring
@@ -834,12 +915,13 @@ export class GameCharacter {
 
       ctx.fillStyle = 'rgba(56, 189, 248, 0.65)';
       const step = 10;
-      for (let py = 0; py < frame.height; py += step) {
-        for (let px = 0; px < frame.width; px += step) {
-          const sx = flipX ? (frame.width - 1 - px) : px;
-          const a = walkImageData.data[(py * frame.width + sx) * 4 + 3];
+      const iw = walkImageData.width;
+      for (let py = 0; py < walkImageData.height; py += step) {
+        for (let px = 0; px < iw; px += step) {
+          const sx = flipX ? (iw - 1 - px) : px;
+          const a = walkImageData.data[(py * iw + sx) * 4 + 3];
           if (a > 45) {
-            ctx.fillRect(topLeftX + px * this.scale - 1, topLeftY + py * this.scale - 1, 2.5, 2.5);
+            ctx.fillRect(this.x + imgX + px * this.scale - 1, this.y - this.z + imgY + py * this.scale - 1, 2.5, 2.5);
           }
         }
       }

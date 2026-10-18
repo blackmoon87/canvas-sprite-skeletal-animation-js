@@ -161,12 +161,13 @@ export function removeSpecks(imageData, { minFraction = 0.003, minPixels = 30, n
 }
 
 /**
- * Removes a smooth background (gradient, vignette, soft floor shadow) touching the border:
+ * Removes a smooth background (gradient, vignette, soft floor shadow) touching the border
+ * (or, with fromTransparent, touching the already-erased area):
  * the background grows from the border into neighbouring pixels while the color changes by at
  * most `step` per pixel, and stays within `maxDist` of the median border color. Sharp
  * character outlines stop it. Decisions use a median-filtered copy so GIF dithering doesn't matter.
  */
-export function keySmoothBackground(imageData, { step = 7, maxDist = 110 } = {}) {
+export function keySmoothBackground(imageData, { step = 7, maxDist = 110, fromTransparent = false } = {}) {
   const { width: w, height: h } = imageData;
   const src = imageData.data;
   const n = w * h;
@@ -197,7 +198,7 @@ export function keySmoothBackground(imageData, { step = 7, maxDist = 110 } = {})
   for (let y = 0; y < h; y += 2) border.push(y * w, y * w + w - 1);
   const med = (arr) => { const v = border.map((i) => arr[i]).sort((p, q) => p - q); return v[v.length >> 1]; };
   const bgR = med(R), bgG = med(G), bgB = med(B);
-  const max2 = maxDist * maxDist;
+  const max2 = fromTransparent ? Infinity : maxDist * maxDist;
   const nearBg = (i) => {
     const dr = R[i] - bgR, dg = G[i] - bgG, db = B[i] - bgB;
     return dr * dr + dg * dg + db * db <= max2;
@@ -207,8 +208,14 @@ export function keySmoothBackground(imageData, { step = 7, maxDist = 110 } = {})
   const queue = new Int32Array(n);
   let head = 0, tail = 0;
   const seed = (i) => { if (!visited[i] && nearBg(i)) { visited[i] = 1; queue[tail++] = i; } };
-  for (let x = 0; x < w; x++) { seed(x); seed((h - 1) * w + x); }
-  for (let y = 0; y < h; y++) { seed(y * w); seed(y * w + w - 1); }
+  if (fromTransparent) {
+    // grow from what is already erased (e.g. outside a border the user drew); erased pixels
+    // keep their color, so the growth knows what the background around the character looked like
+    for (let i = 0; i < n; i++) if (src[i * 4 + 3] < 20) { visited[i] = 1; queue[tail++] = i; }
+  } else {
+    for (let x = 0; x < w; x++) { seed(x); seed((h - 1) * w + x); }
+    for (let y = 0; y < h; y++) { seed(y * w); seed(y * w + w - 1); }
+  }
   const grow = (cur, nb) => {
     if (visited[nb]) return;
     if (Math.abs(R[nb] - R[cur]) > step || Math.abs(G[nb] - G[cur]) > step || Math.abs(B[nb] - B[cur]) > step) return;
@@ -291,9 +298,9 @@ export function prepareFrames(raws, { keying = 'auto', tolerance = 38, targetHei
   const outW = Math.max(8, Math.round(cropW * scale));
   const outH = targetHeight;
 
-  return keyed.map((k, i) => {
-    const tmp = makeCanvas(k.width, k.height);
-    tmp.getContext('2d').putImageData(k, 0, 0);
+  const place = (img) => {
+    const tmp = makeCanvas(img.width, img.height);
+    tmp.getContext('2d').putImageData(img, 0, 0);
     const c = makeCanvas(outW, outH);
     const ctx = c.getContext('2d', { willReadFrequently: true });
     ctx.imageSmoothingQuality = 'high';
@@ -302,11 +309,17 @@ export function prepareFrames(raws, { keying = 'auto', tolerance = 38, targetHei
       ctx.scale(-1, 1);
     }
     ctx.drawImage(tmp, cropX, cropY, cropW, cropH, 0, 0, outW, outH);
+    return { canvas: c, imageData: ctx.getImageData(0, 0, outW, outH) };
+  };
+  return keyed.map((k, i) => {
+    const { canvas, imageData } = place(k);
     return {
       index: i,
       angleDeg: raws[i].angleDeg,
-      canvas: c,
-      imageData: ctx.getImageData(0, 0, outW, outH),
+      canvas,
+      imageData,
+      // the same crop before background removal: lets editors restore wrongly removed pixels
+      raw: place(raws[i].imageData).imageData.data,
       width: outW,
       height: outH
     };
@@ -366,13 +379,16 @@ export async function loadImageFrames(sources, { singleAngle = 0, maxSide = 900 
   return raws;
 }
 
-/** Slices a sprite sheet image with its atlas into frames. */
-export function framesFromSheet(sheetImage, atlas) {
+/**
+ * Slices a sprite sheet image with its atlas into frames. An optional labels sheet (same layout,
+ * body-part id in the red channel, see buildLabelSheet) restores hand-painted body parts.
+ */
+export function framesFromSheet(sheetImage, atlas, labelsImage = null) {
   return atlas.frames.map((meta, i) => {
     const c = makeCanvas(meta.w, meta.h);
     const ctx = c.getContext('2d', { willReadFrequently: true });
     ctx.drawImage(sheetImage, meta.x, meta.y, meta.w, meta.h, 0, 0, meta.w, meta.h);
-    return {
+    const frame = {
       ...meta,
       index: meta.index ?? i,
       angleDeg: meta.angleDeg ?? (atlas.frames.length === 1 ? 0 : (i / (atlas.frames.length - 1)) * 180),
@@ -381,7 +397,38 @@ export function framesFromSheet(sheetImage, atlas) {
       width: meta.w,
       height: meta.h
     };
+    if (labelsImage) {
+      const lc = makeCanvas(meta.w, meta.h);
+      const lctx = lc.getContext('2d', { willReadFrequently: true });
+      lctx.drawImage(labelsImage, meta.x, meta.y, meta.w, meta.h, 0, 0, meta.w, meta.h);
+      const d = lctx.getImageData(0, 0, meta.w, meta.h).data;
+      const ov = new Uint8Array(meta.w * meta.h);
+      let any = false;
+      for (let k = 0; k < ov.length; k++) {
+        if (d[k * 4 + 3] > 128 && d[k * 4]) { ov[k] = d[k * 4]; any = true; }
+      }
+      if (any) frame.labelOverride = ov;
+    }
+    return frame;
   });
+}
+
+/** Packs frames' hand-painted body parts (frame.labelOverride) into a PNG with the sheet layout. */
+export function buildLabelSheet(frames, atlas) {
+  if (!frames.some((f) => f.labelOverride)) return null;
+  const sheet = makeCanvas(atlas.cellWidth * atlas.cols, atlas.cellHeight * atlas.rows);
+  const ctx = sheet.getContext('2d');
+  frames.forEach((f, i) => {
+    if (!f.labelOverride) return;
+    const img = new ImageData(f.width, f.height);
+    f.labelOverride.forEach((l, k) => {
+      if (!l) return;
+      img.data[k * 4] = l;
+      img.data[k * 4 + 3] = 255;
+    });
+    ctx.putImageData(img, atlas.frames[i].x, atlas.frames[i].y);
+  });
+  return sheet;
 }
 
 /** Packs frames into one sprite sheet canvas and an atlas (same format as knight_atlas.json). */

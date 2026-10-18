@@ -304,6 +304,8 @@
         <span><span class="key-tag">Space</span>Jump / Shatter</span>
         <span><span class="key-tag">Shift</span>Pixel Dash</span>
         <span><span class="key-tag">E</span>360° Spin Attack</span>
+        <span><span class="key-tag">R</span>Run</span>
+        <span><span class="key-tag">1-9</span>Moves</span>
       </div>
     </div>
 
@@ -382,6 +384,19 @@
           📂 Load Your Character (character.json + sheet .png + atlas .json)
           <input type="file" id="fileCharacter" multiple accept=".json,.png,.webp" style="display:none" />
         </label>
+      </div>
+
+      <!-- Card: Animations -->
+      <div class="card">
+        <h2><span>💃 Animations</span></h2>
+        <div style="display: grid; grid-template-columns: 1fr auto auto; gap: 6px; align-items: center;">
+          <select id="selClip" class="shader-select"></select>
+          <button class="action-btn primary" id="btnPlayClip">▶</button>
+          <button class="action-btn" id="btnStopClip">■</button>
+        </div>
+        <p style="font-size: 12px; color: var(--text-muted); margin-top: 6px;">
+          Keys <strong>1-9</strong>: wave · cheer · clap · dab · sit · kick · hip-sway · step-touch · victory.
+          <strong>R</strong> toggles running. Moves play over walking.</p>
       </div>
 
       <!-- Card 3: Real-Time Pixel Loupe Inspector -->
@@ -698,9 +713,11 @@ function gameLoop(dt) {
     document.getElementById('fileCharacter').addEventListener('change', async e => {
       const files = [...e.target.files];
       try {
-        let profile = null, atlas = null, sheet = null;
+        let profile = null, atlas = null, sheet = null, labels = null;
         for (const f of files) {
-          if (f.type.startsWith('image/')) {
+          if (f.type.startsWith('image/') && /labels/i.test(f.name)) {
+            labels = f;
+          } else if (f.type.startsWith('image/')) {
             sheet = f;
           } else {
             const json = JSON.parse(await f.text());
@@ -713,7 +730,8 @@ function gameLoop(dt) {
         }
         const img = await loadImage(URL.createObjectURL(sheet));
         knight.setProfile(profile);
-        knight.setFrames(framesFromSheet(img, atlas));
+        knight.setFrames(framesFromSheet(img, atlas, labels ? await loadImage(URL.createObjectURL(labels)) : null));
+        fillClips();
         syncParticleCloud(true);
         hudStatus.innerHTML = `<strong>Character loaded:</strong> ${profile.name} • ${knight.frames.length} angles`;
       } catch (err) {
@@ -741,7 +759,25 @@ function gameLoop(dt) {
       if (e.code === 'KeyE') {
         triggerSpinSlash();
       }
+      if (e.code === 'KeyR') input.run = !input.run;
+      const quick = ['wave-right', 'cheer', 'clap', 'dab', 'sit', 'kick', 'hip-sway', 'step-touch', 'victory'];
+      const digit = /^Digit([1-9])$/.exec(e.code);
+      if (digit) {
+        const name = quick[+digit[1] - 1];
+        if (knight.animator.isPlaying(name)) knight.stop(name);
+        else knight.play(name);
+        hudStatus.innerHTML = `<strong>Animation:</strong> ${name}`;
+      }
     });
+
+    // Animation picker
+    const selClip = document.getElementById('selClip');
+    const fillClips = () => {
+      selClip.innerHTML = knight.animations.map(n => `<option value="${n}">${n}</option>`).join('');
+    };
+    fillClips();
+    document.getElementById('btnPlayClip').addEventListener('click', () => knight.play(selClip.value));
+    document.getElementById('btnStopClip').addEventListener('click', () => knight.stop());
 
     window.addEventListener('keyup', e => {
       if (e.code === 'KeyW' || e.code === 'ArrowUp') input.up = false;
@@ -816,26 +852,26 @@ function gameLoop(dt) {
       const st = knight.getActiveFrameState();
       if (!st) return;
       const { frame, flipX } = st;
-      const activeImageData = knight.activeDeformedData || frame.imageData;
+      const activeImageData = knight.activeDeformedData || knight.rig.paddedFrame(frame);
+      const pad = activeImageData.pad || 0;
+      const imgW = activeImageData.width, imgH = activeImageData.height;
 
       const drawScale = currentMode === 'inspector' ? 1.35 : knight.scale;
       const centerX = currentMode === 'game' ? knight.x : canvas.width * 0.5;
       const centerY = currentMode === 'game' ? (knight.y - knight.z) : canvas.height * 0.55;
-      const drawW = frame.width * drawScale;
-      const drawH = frame.height * drawScale;
-      const topLeftX = centerX - drawW * 0.5;
-      const topLeftY = centerY - drawH * 0.75;
+      const topLeftX = centerX - (frame.width * 0.5 + pad) * drawScale;
+      const topLeftY = centerY - (frame.height * 0.75 + pad) * drawScale;
 
       let localX = Math.floor((mx - topLeftX) / drawScale);
       let localY = Math.floor((my - topLeftY) / drawScale);
 
-      if (localX < 0 || localX >= frame.width || localY < 0 || localY >= frame.height) {
+      if (localX < 0 || localX >= imgW || localY < 0 || localY >= imgH) {
         return;
       }
 
-      const sampleX = flipX ? (frame.width - 1 - localX) : localX;
+      const sampleX = flipX ? (imgW - 1 - localX) : localX;
       const data = activeImageData.data;
-      const idx = (localY * frame.width + sampleX) * 4;
+      const idx = (localY * imgW + sampleX) * 4;
       const r = data[idx], g = data[idx + 1], b = data[idx + 2], a = data[idx + 3];
       const hex = '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('').toUpperCase();
 
@@ -846,8 +882,8 @@ function gameLoop(dt) {
         for (let dx = -radius; dx < radius; dx++) {
           const px = sampleX + dx;
           const py = localY + dy;
-          if (px >= 0 && px < frame.width && py >= 0 && py < frame.height) {
-            const pIdx = (py * frame.width + px) * 4;
+          if (px >= 0 && px < imgW && py >= 0 && py < imgH) {
+            const pIdx = (py * imgW + px) * 4;
             const pr = data[pIdx], pg = data[pIdx + 1], pb = data[pIdx + 2], pa = data[pIdx + 3];
             if (pa > 0) {
               loupeCtx.fillStyle = `rgba(${pr},${pg},${pb},${(pa / 255).toFixed(2)})`;
@@ -1136,19 +1172,21 @@ function gameLoop(dt) {
       const cx = canvas.width * 0.5;
       const cy = canvas.height * 0.55;
 
-      const walkData = knight.getCurrentWalkImageData() || frame.imageData;
+      const walkData = knight.getCurrentWalkImageData() || knight.rig.paddedFrame(frame);
       knight.activeDeformedData = walkData;
+      const pad = walkData.pad || 0;
       const shaded = CanvasPixelProcessor.applyPixelShader(walkData, shaderMode, time, pixelBlockSize);
       const off = document.createElement('canvas');
-      off.width = frame.width;
-      off.height = frame.height;
+      off.width = walkData.width;
+      off.height = walkData.height;
       off.getContext('2d').putImageData(shaded, 0, 0);
 
       ctx.save();
       ctx.translate(cx, cy);
       if (flipX) ctx.scale(-1, 1);
       ctx.imageSmoothingEnabled = false;
-      ctx.drawImage(off, -drawW * 0.5, -drawH * 0.75, drawW, drawH);
+      ctx.drawImage(off, -(frame.width * 0.5 + pad) * drawScale, -(frame.height * 0.75 + pad) * drawScale,
+        walkData.width * drawScale, walkData.height * drawScale);
       ctx.restore();
 
       ctx.save();
