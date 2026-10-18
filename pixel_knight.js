@@ -402,6 +402,7 @@ export class GameCharacter {
     this.vx = 0;
     this.vy = 0;
     this.speed = options.speed ?? 280;
+    this.runMultiplier = options.runMultiplier ?? 1.7; // speed while input.run is held
     this.scale = options.scale ?? 0.62;
     this.rig = options.rig ?? (options.profile ? new SkeletalRig(options.profile) : CanvasPixelProcessor.sharedRig);
 
@@ -679,8 +680,9 @@ export class GameCharacter {
       if (len > 0.01) {
         const nx = moveX / len;
         const ny = moveY / len;
-        this.vx += (nx * this.speed - this.vx) * Math.min(1, dt * 14);
-        this.vy += (ny * this.speed - this.vy) * Math.min(1, dt * 14);
+        const speed = this.speed * (input.run ? this.runMultiplier : 1);
+        this.vx += (nx * speed - this.vx) * Math.min(1, dt * 14);
+        this.vy += (ny * speed - this.vy) * Math.min(1, dt * 14);
         this.isMoving = true;
       } else {
         this.vx *= Math.pow(0.001, dt);
@@ -732,7 +734,7 @@ export class GameCharacter {
     const speedMag = Math.hypot(this.vx, this.vy);
     const shouldWalk = (speedMag > 15 || this.demoWalk) && this.z === 0;
     // Run when moving clearly faster than walking speed (e.g. input.run or a dash)
-    const runTarget = input.run || this.dashTimer > 0 || speedMag > this.speed * 1.25 ? 1 : 0;
+    const runTarget = this.dashTimer > 0 || speedMag > this.speed * 1.25 ? 1 : 0;
     this.runAmount += (runTarget - this.runAmount) * Math.min(1, dt * 6);
 
     if (shouldWalk) {

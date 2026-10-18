@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Basic Game Example</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #10151f; overflow: hidden; }
+    canvas { display: block; width: 100%; height: 100%; }
+    #help {
+      position: fixed; left: 12px; top: 10px; color: #cbd5e1;
+      font: 13px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    kbd { background: #1e293b; border: 1px solid #334155; border-radius: 4px; padding: 0 5px; }
+  </style>
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <div id="help">
+    <kbd>WASD</kbd> / <kbd>arrows</kbd> walk · <kbd>Shift</kbd> run · <kbd>Space</kbd> jump ·
+    <kbd>1</kbd> wave · <kbd>2</kbd> cheer · <kbd>3</kbd> dance · <kbd>4</kbd> sit / stand
+  </div>
+
+  <script type="module">
+    // The whole game: load a character, read the keyboard, update, draw.
+    import { GameCharacter } from '../pixel_knight.js';
+
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+    const resize = () => { canvas.width = innerWidth; canvas.height = innerHeight; };
+    addEventListener('resize', resize);
+    resize();
+
+    // 1. Load any character made with the editor (character.json + its sprite files)
+    const hero = await GameCharacter.load('../characters/knight/character.json', {
+      x: canvas.width / 2,
+      y: canvas.height * 0.6,
+      scale: 0.6,   // on-screen size
+      speed: 220    // walking speed, pixels per second
+    });
+
+    // 2. Keyboard
+    const keys = {};
+    addEventListener('keydown', (e) => {
+      keys[e.code] = true;
+      if (e.code === 'Space') { hero.jump(); e.preventDefault(); }
+      if (e.code === 'Digit1') hero.play('wave-right');
+      if (e.code === 'Digit2') hero.play('cheer');
+      if (e.code === 'Digit3') hero.animator.isPlaying('hip-sway') ? hero.stop('hip-sway') : hero.play('hip-sway');
+      if (e.code === 'Digit4') hero.animator.isPlaying('sit') ? hero.stop('sit') : hero.play('sit');
+    });
+    addEventListener('keyup', (e) => { keys[e.code] = false; });
+
+    // 3. Game loop
+    let last = performance.now();
+    function frame(now) {
+      const dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+
+      hero.update(dt, {
+        left: keys.KeyA || keys.ArrowLeft,
+        right: keys.KeyD || keys.ArrowRight,
+        up: keys.KeyW || keys.ArrowUp,
+        down: keys.KeyS || keys.ArrowDown,
+        run: keys.ShiftLeft || keys.ShiftRight
+      }, { width: canvas.width, height: canvas.height });
+
+      ctx.fillStyle = '#10151f';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      hero.draw(ctx);
+
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  </script>
+</body>
+</html>

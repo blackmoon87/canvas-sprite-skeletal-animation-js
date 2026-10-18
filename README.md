@@ -1,138 +1,210 @@
 # Canvas Sprite Skeletal Animation (JavaScript)
 
-**Procedural walk-cycle animation for ANY 2D game character with pure JavaScript and HTML5 Canvas.**
-Turn static character art (a 360° turnaround GIF, PNG frames, or a single image) into a fully
-animated, walking, jumping, attacking game character: no Spine, no DragonBones, no hand-drawn
-animation frames, no dependencies.
+**Turn still pictures of a character into a moving game character, in plain JavaScript and HTML5 Canvas.**
+Give it images of your character from a few angles; it builds a skeleton, and your character can walk,
+run, jump, wave, dance and turn in every direction. No Spine, no DragonBones, no hand-drawn animation
+frames, no dependencies.
 
 **[▶ Live demo](https://blackmoon87.github.io/canvas-sprite-skeletal-animation-js/)** ·
-**[🛠 Character Rig Editor](https://blackmoon87.github.io/canvas-sprite-skeletal-animation-js/editor.html)**
+**[🛠 Character Rig Editor](https://blackmoon87.github.io/canvas-sprite-skeletal-animation-js/editor.html)** ·
+**[🎮 Minimal game example](https://blackmoon87.github.io/canvas-sprite-skeletal-animation-js/examples/basic-game.html)**
 
-![Knight sprite turnaround](characters/knight/knight_spritesheet.png)
+![The example knight from 36 angles](characters/knight/knight_spritesheet.png)
 
-## Make your own character (no code)
+## How it works
 
-1. Open the **[Character Rig Editor](https://blackmoon87.github.io/canvas-sprite-skeletal-animation-js/editor.html)** (`editor.html`).
-2. Load your art (in an **A-pose**, see the requirement below): a **turnaround GIF**, **PNG frames** from
-   front (0°) → right side (90°) → back (180°),
-   **one image** (front or side view), or an existing sprite sheet + atlas.
-   Plain, gradient or transparent backgrounds are removed automatically.
-3. Press **Auto-rig**. Every joint is placed from the silhouette (*chibi* or *realistic human* body type).
-4. Drag joints to fine-tune: the **front view** sets left/right and height, the **side view** sets depth.
-   Colored overlays show which pixels each body part moves.
-5. Optional: pick cloth colors (cape, skirt, tabard), adjust body-part sizes and walk style.
-6. Check the **preview** at every angle, or **play test** it with WASD / arrows, Space, E.
-7. **Export**: `character.json` + sprite sheet `.png` + atlas `.json`. Put them in `characters/<name>/`.
+1. **You prepare images** of your character standing in an A-pose, seen from several angles.
+2. **The editor rigs it**: removes the background, places a skeleton, and finds which pixels belong to the
+   head, body, arms and legs. You check and fix it, then export 3–4 files.
+3. **Your game loads those files** with one line and moves the character with the keyboard, gamepad or AI.
 
-### Clean any art: busy photos, video frames, watermarks
+The included **knight** (`characters/knight/`) is the reference example of every step.
 
-The **Clean & Parts** tab handles art that automatic background removal can't:
+---
 
-- **⭕ Keep inside border**: draw around the character; everything outside is erased.
-- **🧹 Remove background left around the edges**: grows from the erased area while colors change smoothly and
-  stops at the character's outline. Border + 🧹 cuts a character out of a busy studio photo.
-- **✂ Erase inside border**, **🧽 eraser**, **🖌 restore** (brings back the original pixels), **🪄 magic wand**,
-  **✨ remove specks**, and undo. Border / wand tools can apply to every frame at once.
-- **Body parts**: pick *arm L / arm R / leg L / leg R / head / torso / front cloth / back cloth* and paint, or draw a
-  border. For a limb, the border is its exact outline. Use this when arms touch the body or sleeves match the shirt.
-  Painted parts are exported as `<name>_labels.png`.
+## 1. What you need: images and angles
 
-### Animate it
+### The pose (required)
 
-The **Animate** tab plays the built-in moves on your character and lets you make new ones:
+A **biped** (2 arms, 2 legs) standing in an **A-pose**:
 
-- **Pose mode**: drag hands, elbows, feet, knees, head or hips in the preview (inverse kinematics), or use
-  per-joint sliders (shoulder raise / side raise / twist, elbow, hip, knee, ankle, spine, neck, root, planted feet).
-- **Keyframes**: set poses at times, scrub and play, then **save** the clip into the character. It is
-  exported in `character.json` and plays in the game with `hero.play('my-move')`.
+| ✅ Do | ❌ Avoid |
+| --- | --- |
+| Arms held **away from the body** (about 20–45°), a gap you can see between arm and body | Arms against the body, hands in pockets, arms crossed |
+| Legs **apart**, a gap between them, feet flat on the floor | Legs together, crossed, one foot lifted |
+| Hands and feet **fully visible** | Hands behind the back, big props covering the body |
+| Standing straight, looking forward | Sitting, squatting, arms raised high, action poses |
 
-### Input requirement: A-pose, parts clearly separated
+Every move (walk, wave, dance, jump) is made by moving these parts, so they must be easy to tell apart.
+The editor checks this and warns you when an arm or the legs touch the body.
 
-Draw / render / export your character as a **biped (2 arms, 2 legs) standing in an A-pose**:
+### How many images, which angles
 
-- arms held **away from the body** (about 20–45°), with a visible gap between each arm and the torso
-- legs **apart**, with a gap between them; feet flat on the floor
-- hands and feet **fully visible** (not hidden behind the body, in pockets, or holding large props)
-- a plain, gradient or transparent background (busy backgrounds can be cleaned in the editor)
+The character turns on the spot like on a turntable. **Angle 0° = facing you**, **90° = facing the right
+side of the screen**, **180° = facing away**. You only need **0° to 180°**: the other half of the turn is
+made automatically by mirroring.
 
-Every motion (walk, wave, dance, jump) is made by moving these parts, so the rig must be able to tell them
-apart. When parts are spaced out, auto-rig separates them by itself; the editor checks this and warns when an
-arm or the legs touch the body. Art where limbs touch the body still works if you outline the limbs with
-*Body parts* in the editor, but it takes manual work. Poses like squatting, sitting or arms raised high are not
-supported as input. For the best result use a full turnaround; with one image, every angle uses it.
+| Option | Images | Angles | Result |
+| --- | --- | --- | --- |
+| ⭐ **Best** | **36** | every 5°: 0°, 5°, 10° … 180° | smooth turning in every direction (the knight uses this) |
+| 👍 **Good** | **9** | every 22.5°: 0°, 22.5°, 45°, 67.5°, 90°, 112.5°, 135°, 157.5°, 180° | good for 8–16 direction games |
+| **Minimum (8 directions)** | **5** | 0°, 45°, 90°, 135°, 180° | front, diagonals, side, back |
+| **Side-scroller / platformer** | **1** | 90° (facing right) | walks left and right (left is mirrored) |
+| **Front only** | **1** | 0° | for menus or front-facing games |
 
-## Features
+More images = smoother turning. Any number between these also works; the angles must be **evenly spaced**
+from 0° to 180°, in order.
 
-- **Skeletal rig on raw pixels:** a hierarchical bone and joint skeleton (pelvis, spine, neck, head,
-  shoulders, elbows, wrists, hips, knees, ankles, toes, heels, tabard and cape) skins the sprite's
-  `ImageData` buffer directly.
-- **Works from every angle (360°):** 36 pre-rendered angles (72 effective with mirroring).
-  The rest pose is fitted to each frame's real turntable angle, so bones line up with the pixels.
-- **Realistic gait:** knee hinge flexion in swing, heel-strike → flat foot → heel-off → toe-off,
-  contralateral arm swing, pelvis rotation, and a body bob solved from the planted foot (ground IK).
-- **No foot sliding:** walk phase speed is matched to stride length.
-- **Layered skinning:** each sprite frame is segmented into body parts (head, torso, arms, legs,
-  front tabard, back cape). Every part moves only its own pixels and layers are painted back to
-  front, so limbs never drag the body along. Hidden torso behind the arm is reconstructed in profile.
-- **Fast:** walk poses are quantized and cached, so it runs at full frame rate in a normal game loop.
-- **Any character:** a JSON character profile describes the skeleton, body-part sizes, cloth
-  colors and walk style; make one with the visual editor (auto-rig + drag joints).
-- **Game-ready object:** `GameCharacter` with 8-direction / mouse movement, jump physics, dash with
-  after-images, spin attack, footstep dust, pixel-perfect collision (`hitTestPixel`).
-- **Pixel shaders on `ImageData`:** pixelate, neon edge, thermal, hologram, hit flash.
-- **Extras:** pixel particle shatter, 3D voxel point cloud, live GIF frame decoding (`ImageDecoder`)
-  with de-dither and background keying.
+### Image rules
 
-## Quick start
+- **Same image size** for every angle, the same zoom, and the camera at the same height.
+- The character stands on the **same spot** in every image (turntable style), feet on the same line.
+- **PNG with a transparent background** is best. A plain or gradient background is removed automatically;
+  busy photos can be cleaned in the editor.
+- At least **~300 px tall**. Bigger is fine; the editor scales it.
+- Name the files so they sort in angle order: `00.png`, `01.png`, … (or `angle_000.png`, `angle_005.png`, …).
+- Instead of PNG files you can load **one turntable GIF** (Chrome / Edge) or a sprite sheet + atlas.
 
-ES modules need a local web server (opening `index.html` from the file system will not work):
+**Ways to get these images:** render a 3D model on a turntable (Blender, any 3D tool), ask an AI image
+generator for a "character turnaround sheet, A-pose, transparent background", or draw them.
 
-```bash
-git clone https://github.com/blackmoon87/canvas-sprite-skeletal-animation-js.git
-cd canvas-sprite-skeletal-animation-js
-python3 -m http.server 8000
-# open http://localhost:8000
+**Symmetry:** because 180°–360° is mirrored, a character holding a sword in one hand will hold it in the
+other hand when facing left. Keep characters roughly left/right symmetric for best results.
+
+---
+
+## 2. Make your character in the editor (no code)
+
+Open **[editor.html](https://blackmoon87.github.io/canvas-sprite-skeletal-animation-js/editor.html)**
+(or locally, see [Run it locally](#run-it-locally)). Click **Use the example knight** first to see a
+finished character.
+
+**Character tab**
+1. **Load** your images: *PNG frames, front → back* (select all files), *One image*, or *Turntable GIF*.
+2. **Auto-rig**: pick *chibi / big head* or *realistic human* and press **⚡ Auto-rig**. Read the status bar:
+   ✓ means the parts are well separated; ⚠ names the parts that touch the body.
+3. **Joints**: drag the dots. **View A** (front) sets left/right and height, **View B** (side) sets depth.
+   Each view has a slider to pick any frame. The yellow line is the floor.
+4. Optional: cloth colors (cape, skirt), body-part sizes, walk style.
+
+**Clean & Parts tab**: fix the pixels
+- Colors show which part each pixel moves with: head (blue), torso (grey), arm L (purple),
+  arm R (pink), leg L (green), leg R (yellow), both legs overlapping in side views (cyan), cloth (red).
+- Wrong part? Choose the **Part**, click **⭕ Border → part**, and click around it (close with Enter,
+  a double-click, or a click on the first corner). For an arm or leg, the border is its exact outline.
+- **Side views:** if the far foot is still visible behind the near one, mark it **leg R** in each side
+  frame (move View B's slider through the frames).
+- Leftover background: **⭕ Keep inside border**, **🧹 Remove background left around the edges**,
+  eraser, restore, magic wand, remove specks, **↶ Undo**.
+
+**Animate tab**: test and create moves
+- Click any move to play it on your character. Tick **walk** to see it while walking.
+- **Pose mode**: drag hands, feet, head or hips in the preview, set keys on the timeline, and
+  **💾 Save to character** to create your own move.
+
+**Export** (Character tab, step 7): type a name and click **⬇ Download character (all files)**:
+
+```
+characters/my-hero/
+├── character.json          ← skeleton, settings, your own moves
+├── my-hero_spritesheet.png ← all angles in one image
+├── my-hero_atlas.json      ← where each angle is in the sheet
+└── my-hero_labels.png      ← your body-part fixes (only if you made any)
 ```
 
-Controls: **WASD / arrows** move · **click** move · **Space** jump · **Shift** dash · **E** spin attack.
-In the *Raw ImageData Inspector* tab, enable *Walk-in-Place Demo* and set the rotation to 90° to
-study the side-view walk cycle.
+Put the files in one folder. Your fixes exist only in the editor until you export.
 
-## Use it in your game
+---
 
-```js
-import { GameCharacter } from './pixel_knight.js';
+## 3. Make it move in your game (script)
 
-const player = await GameCharacter.load('./characters/knight/character.json', { x: 400, y: 300 });
+Copy `pixel_knight.js`, `skeletal_rig.js`, `animations.js`, `sprite_tools.js` and your character folder
+into your project. The complete working example is
+[`examples/basic-game.html`](examples/basic-game.html):
 
-function gameLoop(dt) {
-  player.update(dt, { right: keys.ArrowRight, left: keys.ArrowLeft, up: keys.ArrowUp, down: keys.ArrowDown });
-  player.draw(ctx, { showSkeleton: false });
-}
+```html
+<canvas id="game" width="960" height="600"></canvas>
+<script type="module">
+  import { GameCharacter } from './pixel_knight.js';
+
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+
+  // 1. Load the character
+  const hero = await GameCharacter.load('./characters/knight/character.json', {
+    x: 480, y: 360, scale: 0.6, speed: 220
+  });
+
+  // 2. Keyboard
+  const keys = {};
+  addEventListener('keydown', (e) => {
+    keys[e.code] = true;
+    if (e.code === 'Space') hero.jump();
+    if (e.code === 'Digit1') hero.play('wave-right');
+  });
+  addEventListener('keyup', (e) => { keys[e.code] = false; });
+
+  // 3. Game loop: update, then draw
+  let last = performance.now();
+  function frame(now) {
+    const dt = Math.min(0.05, (now - last) / 1000);
+    last = now;
+    hero.update(dt, {
+      left: keys.ArrowLeft, right: keys.ArrowRight,
+      up: keys.ArrowUp, down: keys.ArrowDown,
+      run: keys.ShiftLeft
+    }, { width: canvas.width, height: canvas.height });
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    hero.draw(ctx);
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+</script>
 ```
 
-`player.jump()` (crouch → take-off → tuck → landing), `player.attack()`, `player.dash(dx, dy)`,
-`player.hitTestPixel(x, y)` and `player.setProfile(profile)` (swap characters) are available too.
-Pass `{ run: true }` in the input to run. `PixelKnight` still works as an alias.
+The character turns to face where it walks, steps without sliding its feet, breathes when standing still,
+and runs when `run` is held.
 
-### Animations
+### GameCharacter API
 
-```js
-player.play('wave-right');          // plays over walking (only the right arm is taken over)
-player.play('sit');                 // holds the last pose until stopped
-player.stop('sit');
-player.play('hip-sway', { speed: 1.5 });
-player.animations;                  // every clip name, including the character's own
-```
+| Call | What it does |
+| --- | --- |
+| `await GameCharacter.load(url, options)` | Loads `character.json` and its sprite files. Options: `x`, `y`, `scale`, `speed`, `runMultiplier` |
+| `hero.update(dt, input, bounds)` | Moves and animates. `input`: `left`, `right`, `up`, `down`, `run`, optional `targetPos {x, y}` (walk to a point) and `mousePos` (face the mouse when `hero.aimWithMouse = true`). `bounds`: `{ width, height }` of the play area |
+| `hero.draw(ctx, options)` | Draws shadow, character and effects. Options: `showSkeleton`, `showHitbox`, `shaderMode` |
+| `hero.jump()` | Crouch → take-off → tuck → landing |
+| `hero.play(name, { speed, loop, fade })` | Plays a move over walking, e.g. `'wave-right'` |
+| `hero.stop(name)` / `hero.stop()` | Stops one move / all moves |
+| `hero.animations` | Names of all moves, including the character's own |
+| `hero.attack()`, `hero.dash(dx, dy)` | Sword slash with spin, quick dash |
+| `hero.hitTestPixel(x, y)` | Pixel-perfect collision with the drawn character |
+| `hero.facingDeg` | Facing direction: 0 = down / front, 90 = right, 180 = up / back, 270 = left |
+| `hero.x`, `hero.y`, `hero.scale`, `hero.speed` | Position, size and speed; set them any time |
+| `hero.setProfile(profile)` | Swap the character's skeleton (with `setFrames(frames)` for new images) |
 
-Built-in clips: `wave-right`, `wave-left`, `cheer`, `clap`, `point-right`, `dab`, `hands-on-hips`, `think`,
-`hand-to-face`, `bow`, `sit`, `crouch`, `jump`, `kick`, `leg-lift`, `hip-sway`, `step-touch`, `arms-out-groove`,
-`victory`, `flinch`, `look-around`, `slash`. L / R mean the limb on the viewer's left / right in the front view.
+### Moves (animations)
 
-A clip is plain JSON (angles in degrees, root offsets as a fraction of leg length, `plantL` / `plantR` keep a
-foot planted while the body moves):
+| Move | | Move | |
+| --- | --- | --- | --- |
+| `wave-right`, `wave-left` | wave one hand | `sit`, `crouch` | sit down / crouch (hold until `stop`) |
+| `cheer` | both hands up, bouncing | `jump` | full jump in place |
+| `clap` | clapping | `kick` | kick with the right leg |
+| `point-right` | point to the side | `leg-lift` | dance leg lift |
+| `dab` | dab | `hip-sway` | dance: sway hips side to side |
+| `hands-on-hips` | hands on hips | `step-touch` | dance: step side to side |
+| `think` | hand to chin | `arms-out-groove` | dance: arms out, groove |
+| `hand-to-face` | shy hand to face | `victory` | fist pump |
+| `bow` | bow | `flinch` | get hit |
+| `look-around` | turn head left and right | `slash` | sword slash |
 
-```js
+L / R in names and joints mean the limb on the **viewer's** left / right in the front view.
+Your own moves from the editor's Animate tab are saved in `character.json` and play the same way:
+`hero.play('my-move')`.
+
+A move is plain JSON: angles in degrees, root offsets as a fraction of leg length, `plantL` / `plantR`
+keep a foot on the ground while the body moves:
+
+```json
 {
   "duration": 1.2, "loop": true, "mask": ["armR"],
   "keys": [
@@ -142,59 +214,65 @@ foot planted while the body moves):
 }
 ```
 
-Lower level: `rig.renderPose(frame, pose, facingDeg)` skins any pose (see `SkeletalRig.POSE_KEYS`);
-`animations.js` exports `CLIPS`, `sampleClip()` and the layered `Animator`.
+---
 
-Use the rig directly on any sprite frame:
+## Run it locally
 
-```js
-import { SkeletalRig } from './skeletal_rig.js';
+The pages use JavaScript modules, so open them through a local web server (double-clicking the HTML file
+won't work):
 
-const rig = new SkeletalRig(profile);   // profile = parsed character.json
-const imageData = rig.renderRiggedFrame(frame, walkPhase, walkIntensity, facingDeg);
+```bash
+git clone https://github.com/blackmoon87/canvas-sprite-skeletal-animation-js.git
+cd canvas-sprite-skeletal-animation-js
+python3 -m http.server 8000
 ```
 
-Prepare frames from your own art in code (`sprite_tools.js`):
+Then open:
+- http://localhost:8000/ — demo (WASD / arrows, Space jump, Shift dash, E spin attack, R run, 1–9 moves)
+- http://localhost:8000/editor.html — Character Rig Editor
+- http://localhost:8000/examples/basic-game.html — minimal game example
 
-```js
-import { decodeGifFrames, prepareFrames, buildSpriteSheet } from './sprite_tools.js';
-
-const raws = await decodeGifFrames(gifBlob, { frameCount: 36, coverage: 360 });
-const frames = prepareFrames(raws, { keying: 'auto', targetHeight: 335 });
-const { canvas, atlas } = buildSpriteSheet(frames);
-```
-
-## Character profile (`character.json`)
-
-| Field | Meaning |
-| --- | --- |
-| `joints` | 24 joints. `x`, `y`: pixels in the front (0°) frame. `z`: forward offset from the pelvis, seen in the side (90°) frame |
-| `segmentation` | arm / hand / leg thickness, where the legs start, `armEdges` (separate arms by color edges) |
-| `cloth` | `mode`: `none`, `colors` (picked colors + `tolerance`) or `dominantRed` |
-| `gait` | stride, knee lift, heel–toe roll, arm swing, lean, hip twist, cape trail, camera tilt |
-| `yawTable` / `armTable` | optional measured corrections for turntables that don't rotate evenly (see the knight) |
-| `animations` | the character's own clips (made in the editor's Animate tab) |
-| `sprite` | sprite sheet, atlas and optional labels sheet file names, relative to the profile |
-
-## Files
+## Project files
 
 | File | What it does |
 | --- | --- |
-| `skeletal_rig.js` | Profile-driven skeleton, gait kinematics, forward kinematics + ground contact, frame segmentation, layered skinning |
-| `pixel_knight.js` | `GameCharacter` game object and `CanvasPixelProcessor` (shaders, GIF decoding, point cloud) |
-| `animations.js` | Keyframe clips, built-in move library, layered `Animator` |
-| `sprite_tools.js` | GIF / PNG loading, background removal, cropping, sprite sheet + labels sheet packing |
-| `editor.html` / `editor.js` | Visual Character Rig Editor |
-| `index.html` | Demo studio: playable arena, particles, voxel view, ImageData inspector |
-| `characters/knight/` | Example character: `character.json`, 36-angle sprite sheet + atlas, source GIF |
+| `pixel_knight.js` | `GameCharacter`: loading, movement, jump, moves, drawing, collision |
+| `skeletal_rig.js` | Skeleton, walking, foot contact, body-part detection, pixel skinning |
+| `animations.js` | Moves library and the `Animator` that plays them over walking |
+| `sprite_tools.js` | Loading GIF / PNG, background removal, sprite sheet packing |
+| `editor.html`, `editor.js` | Character Rig Editor |
+| `index.html` | Demo: play area, pixel particles, voxel view, pixel inspector |
+| `examples/basic-game.html` | Minimal game using a character |
+| `characters/knight/` | The example character (36 angles, `character.json`, sprite sheet, atlas, source GIF) |
 
-## Keywords
+<details>
+<summary><strong>character.json reference</strong></summary>
 
-JavaScript sprite animation, character rigging tool, auto rig, keyframe animation, inverse kinematics editor,
-background removal, HTML5 canvas game, procedural animation, 2D skeletal animation,
-inverse kinematics, walk cycle, pixel manipulation, ImageData, game development, indie game,
-360 degree sprite, no-dependency game engine.
+| Field | Meaning |
+| --- | --- |
+| `joints` | 24 joints. `x`, `y`: pixels in the front (0°) image. `z`: forward / back offset from the pelvis, seen in the side (90°) image |
+| `segmentation` | arm / hand / leg thickness, where the legs start, `armEdges` (separate arms by color edges) |
+| `cloth` | `mode`: `none`, `colors` (picked colors + `tolerance`) or `dominantRed` |
+| `gait` | stride, knee lift, heel–toe roll, arm swing, lean, hip twist, cape trail, camera tilt |
+| `yawTable` / `armTable` | optional measured corrections for turntables that don't turn evenly (see the knight) |
+| `animations` | the character's own moves |
+| `sprite` | sprite sheet, atlas and optional labels file names, relative to `character.json` |
+
+Lower level: `new SkeletalRig(profile).renderPose(frame, pose, facingDeg)` draws any pose
+(`SkeletalRig.POSE_KEYS` lists the joint controls); `animations.js` exports `CLIPS`, `sampleClip()` and `Animator`.
+</details>
+
+## Limits
+
+- Bipeds only (2 arms, 2 legs): no animals, wings or tails yet.
+- 180°–360° is mirrored from 0°–180°, so one-sided details swap hands when facing left.
+- Turntable GIF loading needs Chrome or Edge (PNG frames work everywhere).
+- In side views, a far foot visible behind the near one must be marked by hand (see the editor steps).
 
 ## License
 
 [MIT](LICENSE)
+
+<sub>Keywords: JavaScript sprite animation, 2D character rigging, auto rig, skeletal animation, procedural
+walk cycle, keyframe animation, inverse kinematics, HTML5 canvas game, 360 degree sprite, game development,
+indie game, no-dependency game engine.</sub>
