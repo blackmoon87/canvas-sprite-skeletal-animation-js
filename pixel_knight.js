@@ -1,28 +1,19 @@
 /**
  * pixel_knight.js
  * ============================================================================
- * Complete JavaScript Canvas Pixel Processor & 360° Moving Game Object Engine
- * Built for: /Users/blackmoon/Desktop/JS.3D.MESH/img.gif
+ * GameCharacter: a playable 360° character for any profile made with editor.html
+ * (load, walk / run / idle, jump, animation clips, drawing, pixel-perfect collision).
  *
- * Features:
- * 1. Raw Pixel Buffer Handling (`getImageData` / `putImageData` / `Uint8ClampedArray`)
- * 2. Real-Time 360°-Aware Pixel Skeletal Walk Rig (`synthesizeWalkFrame`):
- *    - Biomechanical alternating left/right leg & boot stride (heel-toe lift + ground plant)
- *    - Side-profile dual-leg scissoring (splits overlapping profile leg into shaded Far Leg + Near Leg)
- *    - Front/Back independent left/right boot lift, knee foreshortening, and perspective foot scale
- *    - Contralateral arm/gauntlet counter-swing & red tabard cloth wave physics
- * 3. Live `img.gif` Frame Decoder (`ImageDecoder` API + 2x2 Bayer De-dither & Border Flood-Fill Keyer)
- * 4. Pre-baked 36-Angle Sprite Sheet Loader (72 effective angles across 360° with horizontal mirror)
- * 5. Pixel-Perfect Collision Detection (`hitTestPixel` checking actual deformed alpha > threshold)
- * 6. Dynamic Pixel Particle & 3D Voxel Point-Cloud Extractor
+ * CanvasPixelProcessor: ImageData helpers used by the demo and the editor (studio background
+ * keying, the knight's GIF decoder, pixel shaders, pixel point clouds).
  */
 
-import { SkeletalRig, KnightSkeletalRig } from './skeletal_rig.js';
+import { SkeletalRig } from './skeletal_rig.js';
 import { loadImage, framesFromSheet } from './sprite_tools.js';
 import { Animator } from './animations.js';
 
 export class CanvasPixelProcessor {
-  static sharedRig = new KnightSkeletalRig();
+  static sharedRig = new SkeletalRig(); // the example knight
   /**
    * De-dithers a 2x2 Bayer-ordered GIF frame and removes the studio grey background
    * directly inside an HTML5 Canvas ImageData buffer (Uint8ClampedArray).
@@ -145,26 +136,6 @@ export class CanvasPixelProcessor {
     }
 
     return new ImageData(dst, w, h);
-  }
-
-  /**
-   * 360°-Aware 19-Joint Hierarchical Skeletal Kinematics Synthesizer
-   * Delegates to KnightSkeletalRig (skeletal_rig.js) to solve 3D Forward/Inverse
-   * Kinematics for Pelvis, Spine, Neck, Head, Shoulders, Elbows, Wrists, Hips,
-   * Knees (hinge), Ankles, and Toes, skinning the ImageData buffer per bone.
-   */
-  static synthesizeWalkFrame(frameOrImageData, walkPhase, walkIntensity, normAngleDeg = 0, jumpZ = 0, attackTimer = 0) {
-    const frameObj = frameOrImageData.imageData
-      ? frameOrImageData
-      : { imageData: frameOrImageData, width: frameOrImageData.width, height: frameOrImageData.height };
-    return CanvasPixelProcessor.sharedRig.renderRiggedFrame(
-      frameObj,
-      walkPhase,
-      walkIntensity,
-      normAngleDeg,
-      jumpZ,
-      attackTimer
-    );
   }
 
   /**
@@ -531,9 +502,13 @@ export class GameCharacter {
   currentPose() {
     if (this.poseOverride) return this.poseOverride;
     const rig = this.rig;
-    const w = this.walkIntensity;
-    const base = rig.gaitPose(this.walkPhase, w, this.runAmount);
-    const idle = rig.idlePose(this.time, 1 - w);
+    // Snap the cycles to a fixed number of poses so skinned frames repeat and come from the
+    // rig's cache instead of being skinned again every frame
+    const steps = SkeletalRig.POSES_PER_CYCLE;
+    const phase = (Math.round((this.walkPhase / (Math.PI * 2)) * steps) / steps) * Math.PI * 2;
+    const w = Math.round(this.walkIntensity * 10) / 10;
+    const base = rig.gaitPose(phase, w, Math.round(this.runAmount * 10) / 10);
+    const idle = rig.idlePose(Math.round(this.time * 30) / 30, 1 - w);
     const plant = Math.pow(1 - w, 3);
     for (const [k, v] of Object.entries(idle)) {
       if (k === 'ground') continue;
@@ -936,6 +911,3 @@ export class GameCharacter {
     }
   }
 }
-
-/** The included knight (kept for backwards compatibility): same as GameCharacter with the knight rig. */
-export class PixelKnight extends GameCharacter {}

@@ -278,7 +278,7 @@ export class SkeletalRig {
     this.floorY = this.originY + this._restSole;
   }
 
-  static POSES_PER_CYCLE = 32;
+  static POSES_PER_CYCLE = 32; // walk poses per step cycle (GameCharacter snaps to these)
   static POSE_CACHE_SIZE = 120; // ~35 MB of 220x335 frames
 
   /**
@@ -428,32 +428,6 @@ export class SkeletalRig {
     };
   }
 
-  /** Legacy pose: walk + simple jump tuck + slash (used by renderRiggedFrame). */
-  solveGaitKinematics(walkPhase, walkIntensity, jumpZ = 0, attackTimer = 0) {
-    let p;
-    if (jumpZ > 2) {
-      const air = Math.min(1, jumpZ / 55);
-      p = {
-        ground: 0,
-        hipFlexL: 0.62 * air, kneeFlexL: 1.05 * air, ankleFlexL: -0.15 * air,
-        hipFlexR: 0.15 * air, kneeFlexR: 0.65 * air, ankleFlexR: -0.2 * air,
-        shoulderFlexL: 0.35 * air, elbowFlexL: 0.6 * air,
-        shoulderFlexR: -0.25 * air, elbowFlexR: 0.5 * air,
-        spinePitch: 0.08 * air, neckPitch: -0.05 * air,
-        tabardPitch: 0.35 * air, capePitch: -0.3 * air
-      };
-    } else {
-      p = this.gaitPose(walkPhase, walkIntensity);
-    }
-    if (attackTimer > 0) {
-      const slash = Math.sin((1 - attackTimer / 0.42) * Math.PI);
-      p.shoulderFlexR = 1.25 * slash;
-      p.elbowFlexR = 0.45 * slash;
-    }
-    this.pose = p;
-    return p;
-  }
-
   /**
    * Forward kinematics in 3D character space (relative to the rest pelvis), with planted-foot IK
    * and ground contact.
@@ -540,7 +514,6 @@ export class SkeletalRig {
       const ground = p.ground ?? 1;
       const sole = Math.max(j.heelL.y, j.toeL.y, j.heelR.y, j.toeR.y);
       const drop = (this._restSole - sole) * ground - v('lift') * L;
-      this.bodyDropY = drop;
       if (drop) for (const k in j) j[k].y += drop;
     }
     return j;
@@ -1011,22 +984,6 @@ export class SkeletalRig {
   }
 
   /**
-   * Legacy entry point: walk cycle + jump tuck + slash. Prefer renderPose() with poses from
-   * gaitPose() / animations.js.
-   */
-  renderRiggedFrame(frame, walkPhase, walkIntensity, normAngleDeg = 0, jumpZ = 0, attackTimer = 0) {
-    // Plain walking repeats every cycle: snap it to 32 poses per cycle so skinned frames are reused
-    if (jumpZ <= 1 && attackTimer <= 0 && walkIntensity > 0.01) {
-      const steps = SkeletalRig.POSES_PER_CYCLE;
-      const phaseStep = ((Math.round((walkPhase / (Math.PI * 2)) * steps) % steps) + steps) % steps;
-      walkPhase = (phaseStep / steps) * Math.PI * 2;
-      walkIntensity = Math.round(walkIntensity * 10) / 10;
-    }
-    const pose = this.solveGaitKinematics(walkPhase, walkIntensity, jumpZ, attackTimer);
-    return this.renderPose(frame, pose, normAngleDeg);
-  }
-
-  /**
    * Skins a sprite frame into `pose` (see zeroPose() for the fields). Results are cached by the
    * (quantized) pose, so looping animations cost nothing after their first cycle.
    * Layers are painted back to front; each layer inverse-warps through its bone chain and only
@@ -1330,12 +1287,5 @@ export class SkeletalRig {
       ctx.stroke();
     }
     ctx.restore();
-  }
-}
-
-/** The included knight character (kept for backwards compatibility). */
-export class KnightSkeletalRig extends SkeletalRig {
-  constructor() {
-    super(KNIGHT_PROFILE);
   }
 }

@@ -435,7 +435,7 @@ function gameLoop(dt) {
   </div>
 
   <script type="module">
-    import { PixelKnight, CanvasPixelProcessor } from './pixel_knight.js';
+    import { GameCharacter, CanvasPixelProcessor } from './pixel_knight.js';
     import { loadImage, framesFromSheet } from './sprite_tools.js';
 
     const canvas = document.getElementById('mainCanvas');
@@ -488,7 +488,7 @@ function gameLoop(dt) {
     };
 
     // Instantiate Playable Knight
-    const knight = new PixelKnight({ x: 480, y: 340, scale: 0.62 });
+    const knight = new GameCharacter({ x: 480, y: 340, scale: 0.62 });
 
     // Resize canvas smoothly
     function resizeCanvas() {
