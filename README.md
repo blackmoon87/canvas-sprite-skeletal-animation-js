@@ -13,7 +13,8 @@ animation frames, no dependencies.
 ## Make your own character (no code)
 
 1. Open the **[Character Rig Editor](https://blackmoon87.github.io/canvas-sprite-skeletal-animation-js/editor.html)** (`editor.html`).
-2. Load your art: a **turnaround GIF**, **PNG frames** from front (0°) → right side (90°) → back (180°),
+2. Load your art (in an **A-pose**, see the requirement below): a **turnaround GIF**, **PNG frames** from
+   front (0°) → right side (90°) → back (180°),
    **one image** (front or side view), or an existing sprite sheet + atlas.
    Plain, gradient or transparent backgrounds are removed automatically.
 3. Press **Auto-rig**. Every joint is placed from the silhouette (*chibi* or *realistic human* body type).
@@ -45,9 +46,20 @@ The **Animate** tab plays the built-in moves on your character and lets you make
 - **Keyframes**: set poses at times, scrub and play, then **save** the clip into the character. It is
   exported in `character.json` and plays in the game with `hero.play('my-move')`.
 
-Works for bipeds (2 arms, 2 legs) drawn in a neutral standing pose (arms down or slightly out,
-legs straight). Poses like squatting, sitting or arms raised high need manual joint work and won't
-give a natural walk. For the best result use a full turnaround; with one image, every angle uses it.
+### Input requirement: A-pose, parts clearly separated
+
+Draw / render / export your character as a **biped (2 arms, 2 legs) standing in an A-pose**:
+
+- arms held **away from the body** (about 20–45°), with a visible gap between each arm and the torso
+- legs **apart**, with a gap between them; feet flat on the floor
+- hands and feet **fully visible** (not hidden behind the body, in pockets, or holding large props)
+- a plain, gradient or transparent background (busy backgrounds can be cleaned in the editor)
+
+Every motion (walk, wave, dance, jump) is made by moving these parts, so the rig must be able to tell them
+apart. When parts are spaced out, auto-rig separates them by itself; the editor checks this and warns when an
+arm or the legs touch the body. Art where limbs touch the body still works if you outline the limbs with
+*Body parts* in the editor, but it takes manual work. Poses like squatting, sitting or arms raised high are not
+supported as input. For the best result use a full turnaround; with one image, every angle uses it.
 
 ## Features
 

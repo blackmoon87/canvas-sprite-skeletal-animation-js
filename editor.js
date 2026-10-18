@@ -244,9 +244,56 @@ function processRaws() {
   useFrames(frames);
 }
 
+/**
+ * Pose check for the recommended input: arms held away from the body and legs apart, with a visible
+ * gap (transparent pixels) between each limb and the body. Returns the parts that touch.
+ */
+function checkPartSpacing(profile) {
+  const front = nearestFrame(0);
+  if (!front) return [];
+  const j = profile.joints;
+  const transparentBetween = (y, x0, x1) => {
+    y = Math.round(y);
+    if (y < 0 || y >= front.height) return false;
+    for (let x = Math.round(Math.min(x0, x1)); x <= Math.round(Math.max(x0, x1)); x++) {
+      if (x >= 0 && x < front.width && !opaque(front, x, y)) return true;
+    }
+    return false;
+  };
+  const gapShare = (y0, y1, xs) => {
+    let rows = 0, gaps = 0;
+    for (let y = y0; y <= y1; y++) {
+      rows++;
+      const [a, b] = xs(y);
+      if (transparentBetween(y, a, b)) gaps++;
+    }
+    return rows ? gaps / rows : 1;
+  };
+  const touching = [];
+  const cx = j.pelvis.x;
+  for (const [s, name] of [['L', 'left arm'], ['R', 'right arm']]) {
+    // lower forearm to body center: in an A-pose there is background between them
+    const share = gapShare(Math.round((j['elbow' + s].y + j['wrist' + s].y) / 2), Math.round(j['wrist' + s].y),
+      (y) => [j['wrist' + s].x + (s === 'L' ? 4 : -4), cx]);
+    if (share < 0.5) touching.push(name);
+  }
+  const legShare = gapShare(Math.round(j.kneeL.y), Math.round(j.ankleL.y), () => [j.kneeL.x + 3, j.kneeR.x - 3]);
+  if (legShare < 0.5) touching.push('legs');
+  return touching;
+}
+
 function runAutoRig() {
-  useProfile(autoRig($('selPreset').value));
-  setStatus(`<strong>Auto-rigged ${state.frames.length} frame(s).</strong> Drag joints to fine-tune; check the preview at several angles.`);
+  const profile = autoRig($('selPreset').value);
+  useProfile(profile);
+  const touching = checkPartSpacing(state.profile);
+  if (touching.length) {
+    const verb = touching.length === 1 && touching[0] !== 'legs' ? 'touches' : 'touch';
+    setStatus(`<strong>Auto-rigged.</strong> ⚠ In the front view the <strong>${touching.join(', ')}</strong> ${verb} the body.
+      Best results need an A-pose: arms away from the body, legs apart, with a gap you can see. Otherwise outline the
+      limbs in <em>Clean &amp; Parts → Body parts</em>.`);
+  } else {
+    setStatus(`<strong>Auto-rigged ${state.frames.length} frame(s).</strong> ✓ Arms and legs are clearly separated. Drag joints to fine-tune.`);
+  }
 }
 
 // ---------------------------------------------------------------------------
